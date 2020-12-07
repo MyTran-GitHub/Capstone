@@ -3,7 +3,7 @@ Repository for running essential code on the "Estimating heterogeneous wildfire 
 
 ## Data
 
-There will be a link to the required files to run the scripts.
+The datasets used for this work can be found in Mendeley Data through the following link: http://dx.doi.org/10.17632/t74tgnz7h7.1
 
 ### Additional sources
 
