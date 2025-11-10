@@ -1,3 +1,5 @@
 .Rhistory
 .DS_Store
 .ipynb_checkpoints/
+data/processed/
+results/synthetic_control_objects/
