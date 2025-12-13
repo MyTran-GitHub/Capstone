@@ -1,0 +1,19 @@
+version: "3.9"
+services:
+  litellm-proxy:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-proxy
+    ports:
+      - "4000:4000"
+    environment:
+      # Required: provide your Anthropic API key at runtime (do not commit it)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Optional/Alternate: provide your OpenAI API key to use gpt-4o-mini (default)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Optional: tune logging
+      - LITELLM_LOG=info
+      - PORT=4000
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
+    restart: unless-stopped
