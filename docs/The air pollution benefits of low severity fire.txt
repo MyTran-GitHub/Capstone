@@ -1,0 +1,2568 @@
+﻿The air pollution benefits of low severity fire
+
+Iván Higuera-Mendieta∗1,2 and Marshall Burke2,3,4
+
+1Department of Earth System Science, Stanford University
+2Doerr School of Sustainability, Stanford University
+3National Bureau of Economic Research (NBER)
+
+4Center on Food Security and the Environment, Stanford University
+
+December 8, 2025
+
+Abstract
+
+Larger and more frequent wildfire events in Western North America in recent years have resulted
+
+in extensive human and environmental damage, and are reversing decades of air quality improvements.
+
+Fuels treatments, including the use of prescribed fire, can reduce the extent and severity of future
+
+wildfires, but air quality trade-offs resulting from application of these treatments – more initial smoke
+
+from prescribed burning in hopes of less smoke from future wildfire – remain poorly quantified. Using
+
+two decades of high-resolution satellite-derived measurements of fire severity and fire smoke particulate
+
+matter across California, we assess the causal effect of low-severity wildfire – a proxy for prescribed
+
+burning – on subsequent wildfire activity and air quality, with particular attention to whether low-severity
+
+fire also reduces subsequent fire risk in surrounding unburned areas. We find that locations ”treated”
+
+with low severity fire see an immediate 92% reduction in the probability of very high severity wildfires
+
+in the same location, with detectable reductions in high-severity fire risk lasting up to a decade and
+
+detectable up to 5 km from the treated locations. We estimate that the future benefits of low-severity
+
+fuel “treatments”, in terms of reduced smoke from severe fires, substantially outweigh the costs of the
+
+smoke produced in the initial treatment fires, with benefit-cost ratios that exceed six after a decade even
+
+under a high discount rate (> 6%). Benefits and costs rise roughly linearly with the amount of area
+
+treated. We estimate that a policy of 500 thousand acres of low-severity treatments per year in CA,
+
+sustained for a decade, would have reduced cumulative smoke PM2.5 concentrations by roughly 10% by
+
+the end of the period. These results suggest that substantial expansion of limited current prescribed
+
+burned acreage could have meaningful air quality benefits.
+
+1 The paper is a non-peer reviewed preprint submitted to EarthArXiv. It has been submitted for publication
+
+2 in a peer reviewed journal, but has yet to be formally accepted for publication.
+
+∗Corresponding author: Iván Higuera-Mendieta (ihigueme@stanford.edu). We thank seminar participants at Stanford, the
+
+World Forestry Center, and Makoto Kelp, Minghao Qiu, Michael Wara, Nicholas Enstice, and Apoorva Lal for helpful feedback.
+
+We thank the Stanford Research Computing Center for providing computational resources and support, and thank the Keck
+
+Foundation and the Stanford Data Science Fellowship for funding.
+
+1
+
+
+
+3 1 Introduction
+
+4 A policy of fire suppression has dominated land management in the Western United States for a century
+
+5 [50], giving rise to the growth of forests’ understory fuels and helping to increase the occurrence of larger
+
+6 and more extreme wildfires [3, 31]. This “fire paradox” [23], where putting out fires today can create larger
+
+7 fires in the future, is being amplified by a warming climate, which has dried these fuels and further increased
+
+8 the likelihood of extreme wildfires [1]. Future warming is likely to further exacerbate this activity, perhaps
+
+9 dramatically, even within the next few decades [40, 33].
+
+10 Ongoing increases in the number and severity of wildfires has had a demonstrable negative effect on a range
+
+11 of health and related outcomes, in large part through the smoke that these fires produce [20, 52, 9, 4, 19,
+
+12 7]. Growing smoke exposures are relevant for populations in the immediacy of active wildfire areas, but
+
+13 also to those much further away, as experienced in 2023 at a large scale in the Eastern United States from
+
+14 smoke from distant Canadian fires. Emissions and resulting air pollution from wildfires are already undoing
+
+15 decades of progress in improving air quality in the United States [10], and could potentially curtail the ability
+
+16 to meet greenhouse gas emissions goals [25].
+
+17 Prescribed burning, or the purposeful use of low severity fire to reduce fuel loads, is a central proposed
+
+18 strategy for reducing the likelihood of severe wildfires and the impacts that they cause [37, 38]. A large
+
+19 literature has shown that such burning can have extensive benefits by mitigating future fire spread [6],
+
+20 intensity and severity [55, 34, 14], and tree mortality [42]. However, prescribed burning also entails costs,
+
+21 including the associated particulate matter (PM2.5) from burning [22, 32]. While prescribed fires and low-
+
+22 severity fires are thought to have less attributable smoke PM2.5 than large wildfires [54], precisely quantifying
+
+23 the air quality impacts and resulting population exposures and health impacts of these fuel treatments
+
+24 remains challenging for at least two reasons. First, limited acreage in the Western US is currently treated
+
+25 with prescribed burning (44,000 acres/year average since 2000, as compared to 866,145 acres/year average
+
+26 of wildfire), which makes it difficult to comprehensively understand the benefits in terms of reduced future
+
+27 fire risk for both treated areas and nearby untreated areas, and how these benefits differ by land type
+
+28 and the underlying likelihood of extreme fire. Second, the lack of adequate air quality monitoring systems
+
+29 throughout much of the West has made understanding emissions and pollution impacts difficult [24, 28].
+
+30 Evidence from the more densely populated Southeastern US, where yearly 11 million acres (13 times the total
+
+31 area of Western US prescribed burning) are treated on a yearly average, suggests that prescribed burning
+
+32 can substantially increase both air pollution and health impacts [32], with an estimated three-fold increase
+
+33 in the pulmonary disease burden in areas frequently exposed to treatments [2, 22]. Absent comprehensive
+
+34 information on how the application of prescribed fire alters future fire risk, emissions, and air pollution
+
+35 in Western landscapes, land managers and policy makers have limited guidance on how to resolve a new
+
+36 paradox: does it make sense to emit today in hopes of larger emissions reductions in the future?
+
+37 Here, we comprehensively quantify this trade-off by constructing satellite-derived severity estimates for the
+
+38 majority of wildfires in California from 2000 to 2021 (98.9% of all wildfire events reported by the Monitoring
+
+39 Trends in Burning Severity (MTBS) project), and combining these with fire-specific estimates of resulting
+
+40 smoke PM2.5 emissions from 2006 to 2020 using data from [12] and [53]. Satellite data provides high
+
+41 resolution insight into variation in burn severity within and across fires (Fig 1). Given the limited use of
+
+42 prescribed fire in the historical record, we proxy prescribed fire with areas in existing wildfires that burned
+
+43 at low severity, a commonly used approach in the literature [55, 45]. Importantly, satellite data indicate
+
+44 that low-severity wildfire and observed prescribed fires are comparable in terms of burn severity (Fig S10),
+
+45 making the former a reasonable proxy for the latter. Similar to the goal of prescribed fire, low-severity fire
+
+46 limits fuel build up and promotes fire-resistant tree species which encourages future low-severity fire [49,
+
+2
+
+
+
+Figure 1: Capturing low-severity fire exposure with satellite imagery and exploiting the spatial distribution and
+
+timing of wildfires. a. Landsat mean composites for before and after the 2020 Creek Fire, one of the 1,047 fires in
+
+our dataset. The pre-fire and post-fire composites are calculated using images for the Western fire season one year
+
+before and after the event, respectively. b. Previous large wildfires overlapping and surrounding the Creek Fire over
+
+the previous three decades. c-d. Estimated fire severity (using the Differenced Normalized Burn Ratio ∆NBR) for
+
+the Creek Fire, and selection of 1 km2 pixels ”treated” with low-severity fire (defined as 100 ≤ ∆NBR < 270). e.
+Pictorial depiction of our synthetic control method, in which we use covariate balancing to find a weighted set of
+
+untreated pixels that are most similar to our treated pixels prior to treatment period a. [See Methods SI]
+
+3
+
+
+
+47 48]. Our focus on satellite-derived measures of fire severity, rather than fire intensity as in related past work
+
+48 [55], is meant to better capture accumulated change in vegetation during fire, and is much better correlated
+
+49 with estimated fire emissions (Fig S17).
+
+50 To estimate the impact of low-severity fire on future fire risk, we use a synthetic control approach [56] to
+
+51 match each of 82,592 “treated” low-severity fire 1 km2 pixels to untreated pixels that are similar to treated
+
+52 units on observable characteristics that are strongly predictive of fire risk prior to treatment; these variables
+
+53 include no burning in the 8 years prior to treatment, and balance on cumulative fire severity prior to 8 years
+
+54 up to the beginning of the satellite record, monthly weather, vegetation characteristics and disturbances,
+
+55 and physical covariates (i.e. slope and elevation) (Fig 1E and Supplementary Materials). As shown by [55],
+
+56 who applied a similar approach to understand the effects of fire-intensity, this covariate time series balancing
+
+57 approach offers a robust method for using untreated matched pixels as a counterfactual for what would
+
+58 have happened in treated pixels absent treatment (Methods SI and Fig S2).
+
+59 Using this synthetic control estimation, we then track the occurrence of future fire activity in subsequent
+
+60 years across treated pixels and matched controls (Methods SI and Fig 1E), allowing us to estimate the
+
+61 impact of low-severity fire on the risk and severity of future fires for more than a decade following the initial
+
+62 treatment. Given that different vegetation types can have different responses to treatment, we separately
+
+63 estimate the effect of low-severity exposure for different land cover classes.
+
+64 The effect of past fires on future fire risk is not necessarily limited to locations that directly burned. A host
+
+65 of evidence suggests that wildfires can have a limiting effect on the prevalence and severity of future fires
+
+66 in surrounding non-burned areas [34, 35, 46], in part because because past burns can act as temporary fuel
+
+67 breaks [51, 35], reducing fuel availability and creating vegetation patterns that reduce fire spread probability
+
+68 [46]. Such spillover or ”shadow” effects of treatments on nearby untreated areas are a potentially important
+
+69 benefit of fuels treatments, but have not been quantified at large scale. To quantify these potential spillovers,
+
+70 we use the same synthetic control approach but redefine ”treated” pixels as those unburned pixels within
+
+71 a given radius of pixels that burned at low severity. (Methods SI and Figure 3). These pixels are again
+
+72 matched with unburned pixels further from a fire, and we track the occurrence of future fire activity across
+
+73 burn-adjacent pixels and matched controls. In this spillover analysis, we restrict the estimation sample to
+
+74 fires that did not burn in close proximity to urban areas, as fire spread in Wildland-Urban Interface (WUI)
+
+75 contexts could be limited by other factors (e.g. roads, or suppression near inhabited areas).
+
+76 Finally, to understand the costs and benefits of expanded prescribed burn activity on air quality, we combine
+
+77 these causal estimates of the impact of low severity fire on future fire risk with new empirical estimates
+
+78 of the relationship between observed fire severity and fire-specific attributable smoke PM2.5 emissions, the
+
+79 latter estimated from previously published data [53]. We then simulate the impact of different prescribed
+
+80 burn policies that treat increasing numbers of acres of conifer forests in California per year with low-severity
+
+81 fire, including ambitious existing policy proposals in the state to burn 1 million acres per year [11]. This
+
+82 calculation depends on both the smoke generated by low-severity treatments as well as the resulting change
+
+83 in subsequent wildfire smoke that occurs due to lessened likelihood of high-severity fire, which in turn depends
+
+84 critically on the likelihood that any treated pixel is exposed to subsequent wildfire, which is low in any given
+
+85 year (Methods SI). Applying our policy simulation to observed fire activity since 2010, we compare the
+
+86 observed amount of fire activity and smoke that occurred since 2010 in California with what our estimates
+
+87 imply would have occurred had a given amount of low-severity treatments occurred annually since 2010,
+
+88 tracking benefits in both treated and nearby (2 km) untreated pixels as informed by our causal estimates
+
+89 (Figs 4, S8). We then calculate the ratio of discounted benefits and costs that would face a policymaker
+
+90 embarking on this policy in 2010, under a range of discount rates.
+
+4
+
+
+
+Figure 2: Low severity burning reduces future wildfire risk, with largest declines in extreme fire risk. Estimated
+
+impact of low-severity fire exposure in Conifers on subsequent wildfire activity for fires of all severity, high severity,
+
+and very high severity. Impact is expressed as relative risk, or the ratio of the outcome in treated pixels to control
+
+pixels. Low-severity treatment immediately halves [51.2%, 95% CI: 23.5-70.7] the risk of any wildfire occurring in
+
+subsequent years, with this protective effect disappearing after ∼8 years. Protective effects for high and very high
+severity fires are both large and more persistent, with an immediate 86.2% reduction [95% CI: 70.8 - 93.5%] in
+
+severe fire risk that persists for more than a decade.
+
+91 2 Results
+
+92 In conifer forests, we find that low-severity treatments reduce risk of any severity wildfire by 52.7% [CI 95%:
+
+93 23.5 - 70.1%] in the first year after treatment, as compared to matched synthetic controls. This protective
+
+94 effect decays over time but remains statistically significant after seven years for any level of wildfire severity.
+
+95 The protective effects of initial low-severity fire are even stronger for subsequent severe and very severe fire,
+
+96 with immediate reductions in risk of severe (86.2% [CI 95%: 70.8 - 93.5 %]) and very severe (92.4 % [CI
+
+97 95%: 86.9 - 95.6 %]) wildfires that remain large and statistically significant for at least a decade (Fig 2).
+
+98 This sustained reduction in extreme wildfire risk following low severity fire is consistent with the removal
+
+99 of ground and ladder fuels, the presence of which is known to increase the risk of extreme crown fires [34,
+
+100 45].
+
+101 We find mixed evidence for protective effects of low severity fire in other dominant land types in CA.
+
+102 Compared to conifers, where responses to low-severity fire have been explained by a reduction of ladder
+
+103 fuels and fuel density, shrubland vegetation is expected to respond differently to low-severity wildfire. This
+
+104 is both because shrubland has a higher propensity to burn at high-severity [15], and also because rapid
+
+105 fire-fueled re-sprouting that promotes more shrubland growth and the vegetation species displacement after
+
+106 wildfire [26, 15]. Consistent with this expectation, we find a reduction in wildfire risk of 42.2% [CI 95%:
+
+107 25.5 - 53.3 %] in the first year after treatment in shrubland, but this effect is short-lived compared to
+
+108 the effect in conifers, decaying to zero after four years (Fig S3); we find no statistically significant effect
+
+109 of low-severity fire on future risk of higher-severity fires, although estimates are noisy. We also could not
+
+110 detect a protective effect of low-severity fires in conifer-hardwood or hardwood land types, perhaps in part
+
+111 because of the low presence of low-severity treatments in these areas (Fig S3 and Fig S4).
+
+112 Estimating spillover benefits of low-severity fire to surrounding unburned areas, we find initially unburned
+
+113 pixels within 2-km of pixels that burned at low severity experience a subsequent reduction in wildfire risk of
+
+114 43.4% [95% CI: 23.4% - 58.2%] in the first year after exposure to nearby wildfire. As with the effect of
+
+5
+
+
+
+Figure 3: Low-severity wildfire reduces subsequent fire risk in surrounding unburned areas. We re-define ”treat-
+
+ment” as unburned pixels proximate to pixels that burned at low severity, and again use synthetic control to track
+
+the evolution of future fire risk on comparable controls that were far from burning. For areas immediately adjacent
+
+to a wildfire boundary (2 km), fire risk falls immediately by 43% [CI: 58.2 - 23.4 %], with benefits lasting at least
+
+twelve years. Impacts decrease at distances further from burned pixels, with non-statistically-significant effects after
+
+5 km. We find similar spillover effects for unburned pixels near pixels that burned at high severity (Fig S7).
+
+115 direct exposure to wildfire, this “spillover” effect decays within about a decade of exposure (Fig 3). Similar
+
+116 but somewhat more muted effects are present up to 5 km from initially burned pixels, with a immediate risk
+
+117 reduction after the first year of treatment of 24.5% [CI 95%: 10.4% - 36.8%] and a decay to zero after 7-8
+
+118 years. Past 5 km, we find no statistically significant reductions in subsequent fire risk, consistent with existing
+
+119 literature that suggests such limiting effects are only relevant to locations proximate to previous fires [13,
+
+120 46]. Results are robust to limiting the sample of fires to the smallest fires in our dataset (< 4, 000 acres),
+
+121 which perhaps better approximate likely prescribed fire sizes (Fig S12). We find similar spillover effects
+
+122 on reducing the risk of future high-severity and very-high severity fires (Fig S7). We cannot differentiate
+
+123 any of these effects by vegetation type, as pixels beyond the fire boundary can be made up of a variety of
+
+124 vegetation types. When estimating spillovers using absolute changes in ∆NBR instead of relative risk, we
+
+125 find that per-pixel benefits in spillover pixels are roughly one-fourth of the benefits in the treated pixel (Fig
+
+126 S11).
+
+127 One potential concern is that fire suppression could respond to low severity fire in a way that affects
+
+128 subsequent fire severity, for instance if suppression effort differentially targets previously unburned areas
+
+129 more likely to burn at high severity (biasing treatment effect estimates towards zero), or if suppression
+
+130 activities such as cutting fire lines also directly reduce future fire probability around initially treated pixels
+
+131 (biasing estimates away from zero). However, using fire-level data on suppression costs from [5], we find
+
+132 no relationship between average fire severity and suppression cost per acre (Fig S16A). Similarly, when we
+
+133 restrict our sample to wilderness areas where suppression efforts are typically lower, estimates suggest that
+
+134 low severity fire reduces future fire risk in a way similar to our full sample (Fig S16 C-D). We cautiously
+
+135 conclude that suppression efforts are not likely biasing our estimates.
+
+6
+
+
+
+136 Estimating the benefits of large-scale fire treatments on fire acreage and air quality A primary goal
+
+137 of our analysis is to understand how large-scale, purposeful application of low-severity fire in CA would alter
+
+138 future wildfire risk and resulting air quality from emitted smoke. This requires an ability to estimate how
+
+139 such treatments would alter subsequent fire activity and severity, which we developed above, with a method
+
+140 for translating changes in fire activity of different severity into changes in population smoke exposure. To
+
+141 accomplish this latter task, we build on earlier work that used satellites and machine learning to measure
+
+142 population smoke exposure from wildfires across the US [12], and related work that uses HYSPLIT (a
+
+143 particle tracer model) [43] to link this smoke back to source fires [53]. We then build a regression model
+
+144 that maps variation in fire-attributed smoke – measured as time- and space-integrated surface PM attributed
+
+145 to a specific source fire (Methods) – to the severity of that fire, accounting for differences in area burned
+
+146 and wildfire duration. As expected, we find that more severe fires generate more smoke, controlling for fire
+
+147 size, with effects increasing roughly linearly with each additional pixel that burns at higher fire severity (Fig
+
+148 S9).
+
+149 We combine this fire severity-smoke relationship with our estimates of the direct and indirect (spillover)
+
+150 impacts of low-severity fire on subsequent fire risk to calculate the net smoke impacts of a policy that would
+
+151 apply up to 1 million acres per year of low-severity fire to CA conifer forests, analogous to the recently
+
+152 proposed CA state policy goal [11]. Our approach assumes that low-severity wildfire is a good proxy for
+
+153 the prescribed fire treatments that would occur under such a policy. In each year starting in 2010, we
+
+154 randomly allocate low-severity treatments in 1 km2 (≈ 250 acres) patches across existing conifer forests
+155 in CA, assuming the same patch is never treated twice and never treated after a wildfire (Methods SI).
+
+156 Random allocation roughly reflects observed targeting accuracy of the limited number of treatments in the
+
+157 CalFIRE prescribed fires dataset (Figure S20).
+
+158 We then compute changes in subsequent burn severity using the same causal relationships above (Figures
+
+159 2, 3, S11), where the benefits of a given treatment only arise if that pixel happened to burn in a subsequent
+
+160 wildfire observed in MTBS; if a treated pixel does not subsequently burn, then the policymaker incurs the
+
+161 smoke cost of the initial treatment without subsequent benefit (Methods SI). Finally, we track pixel-specific
+
+162 burn severity and resulting smoke from this prescribed fire policy, relative to a no-policy counterfactual
+
+163 where each pixel burned at its observed year and severity in the measured ∆NBR data. For each year after
+
+164 policy initiation, we calculate the ratio of discounted cumulative benefits (in terms of reduced smoke) to
+
+165 discounted cumulative costs (the emitted smoke from the prescribed burns in each year), where these costs
+
+166 are assumed to represent health costs from smoke and to scale linearly with smoke exposure, following
+
+167 evidence from a recent meta-analysis [19] (see Discussion). We propagate uncertainty across all steps. We
+
+168 do not account for the financial costs of implementing the fuels treatments themselves.
+
+169 We simulate the policy both with and without treatment spillovers to nearby unburned areas. In the no-
+
+170 spillover policy, costs and benefits both scale linearly with the amount of area burned - i.e. each treated
+
+171 pixel generates the same amount of initial smoke and same reduction in future smoke, in expectation. The
+
+172 cost/benefit ratio of the policy thus does not depend on the number of treated acres, but the overall benefit
+
+173 in terms of total smoke reduction scales linearly with the number of treated acres. The same pattern roughly
+
+174 holds in the policy with spillovers, except very large treatment policies can actually have slightly diminishing
+
+175 returns, as we effectively run out of acres to treat in CA after a decade of treatments; any treated acre
+
+176 thus incurs the same costs but generates large but diminishing benefits because nearby pixels have already
+
+177 been treated (Fig S13) and cannot benefit twice in our simulation.
+
+178 We find that even under a conservative assumption of no treatment spillovers to nearby untreated pixels,
+
+179 the expected discounted benefits of treating an acre of conifers with low severity fire, in terms of smoke
+
+7
+
+
+
+180 reduction, exceed the initial smoke cost after roughly 6-8 years, depending on the discount rate (Fig 4
+
+181 and S15, left column). At lower discount rates (2%), smoke benefits exceed costs by a factor of four
+
+182 a decade after treatment and are statistically significant. At very high discount rates, net benefits are
+
+183 positive but more uncertain a decade after treatment. Accounting for treatment spillovers of low severity
+
+184 fire to nearby untreated pixels (within 2 km), which our data suggests is warranted, dramatically increases
+
+185 the net smoke benefits of a treatment. Under all discount rates, net impacts are positive within 4 years,
+
+186 statistically significant within 8 years, and net benefit ratios are greater than 10 after a decade (Fig 4, right
+
+187 column).
+
+188 We then estimate how our simulated prescribed burn policy of treating up to a million acres a year would
+
+189 affect total wildfire acres, the proportion of acres burned at different severity, and the overall contribution
+
+190 of fire to surface smoke PM concentrations. Figure 5A shows predicted total acres (wildfire and prescribed
+
+191 fire) burned per year under a 1 million acres/year (∼4,000 km2/yr) prescribed burn policy, versus what
+192 was observed historically. We estimate that 1 million acres/year of prescribed fire treatments in CA would
+
+193 roughly double total wildfire acreage in years with more limited wildfire activity (e.g. 2011-2016), but would
+
+194 reduce total acreage burned in historically active fire years by about 25% (e.g. 2020). Such a treatment
+
+195 policy would also substantially increase the proportion of area burned to low-severity fire in all years, and
+
+196 reduce the proportion burned at high or very high severity fire (Fig 5B).
+
+197 While our approach does not allow us to precisely quantify the population exposed to smoke under observed
+
+198 and policy counterfactuals, it does allow us to calculate the total change in surface smoke PM attributable to
+
+199 wildfires in CA resulting from an expanded prescribed burn policy in CA. Assuming no treatment spillovers,
+
+200 we estimate that a policy of 1 million acres/year of prescribed burning in CA since 2010 would initially
+
+201 more than double total smoke exposure in the early years of the treatment program, given very low wildfire
+
+202 activity in those years (Fig 5C). We estimate that it would then lead to cumulative reductions in exposure
+
+203 after roughly 8 years, which grow to a 9% [CI 95%: 7.8 - 10.1%] overall reduction in cumulative exposure
+
+204 by 2021. We estimate that this is equivalent to a population-weighted reduction in average annual smoke
+
+205 PM2.5 of about 0.3µg/m
+3 in 2020 (Fig S18). Cumulative benefits exceed costs slightly later in this exercise
+
+206 as compared to per-acre estimates in Fig 4, as here costs are being incurred repeatedly in each year of the
+
+207 policy as additional acres are treated.
+
+208 Accounting for treatment spillovers allows for even larger benefits with substantially fewer acres treated. For
+
+209 instance, accounting for spillover benefits out to 2 km from treatments, as our data suggest is warranted,
+
+210 we estimate that a policy of treating only 500 thousand acres/year (∼2,000 km2/yr) would increase initial
+211 smoke exposures by 50% in early low-smoke years, but lead to reductions in cumulative smoke exposure as
+
+212 early as year 4, and a 10% reduction after a decade. Larger annual treatments lead to larger cumulative
+
+213 reductions, but with diminishing returns once spillovers are accounted for: at high treatment levels, most
+
+214 acres in CA forests will have received either direct or spillover treatments after a decade, rendering each
+
+215 additional treated acre less beneficial (see Methods).
+
+216 3 Discussion
+
+217 Our findings add to a growing literature suggesting the substantial benefits of low-severity and low-intensity
+
+218 fire [55, 34, 45, 27] for reduced future fire risk. Using data on nearly every burned acre in CA over the last
+
+219 two decades, we extend this work to consider the benefits of low severity wildfire across multiple vegetation
+
+220 types, for nearby untreated areas, and for air quality, focusing on measures of fire severity (rather than fire
+
+221 intensity, as in past work [55]) that better map to emissions. We find that not only does direct exposure
+
+8
+
+
+
+Figure 4: Cumulative ratio of expected costs and benefits, in terms of smoke concentrations, from an acre
+
+of prescribed burning. Initial prescribed fire treatment incurs costs, in terms of increasing surface smoke PM2.5
+concentrations, but results in expected future reductions in smoke concentrations. Estimates show the ratio of
+
+cumulative future smoke reductions to initial smoke costs, for a decade after initial treatment. Left column: estimates
+
+without accounting for spillover benefits to nearby unburned pixels. Right column: accounting for spillovers within
+
+2 kilometers of a burned pixel. Note different y-axes. Top row: benefits under a 2% annual discount rate; bottom
+
+row: benefits under 10% discount rate. The net benefit ratio is positive, large and significant after ten years in
+
+all settings, and with positive cumulative benefits after 4-5 years assuming no spillovers, and after 2 years when
+
+spillovers are accounted for.
+
+9
+
+
+
+Figure 5: Large-scale prescribed burning reduces future burned area and wildfire smoke PM2.5. a. Simulated
+
+impacts on total burned area of a policy that treats 1 million conifer acres with prescribed fire each year from 2010
+
+to 2020, assuming no pixels are treated twice and no spillover benefits to nearby untreated pixels. Total burned area
+
+at low severity increases in all years, but declines by up to 25% at higher severities in recent extreme wildfire years. b.
+
+For areas that burned in wildfires, estimated change in the share of area burned to low, high, and very high severity
+
+wildfire, under the 1 million acres/yr (∼4,000 km2/yr) treatment policy; estimates do not include additional acres
+treated by low-severity fire. Large-scale use of low-severity treatments increases the proportion of acres that are
+
+identified as non-burning (∆NBR < 0) and reduces proportions of acreage burning at high and very high severity. c.
+
+Estimated percent change in cumulative smoke PM2.5 under different levels of low-severity treatment, as a proportion
+
+of the total observed smoke PM2.5. Treatment scenarios include the 1 million acres/year with no spillover benefits
+
+(gray), as well as alternative spillovers scenarios that treat from 500 to 2,000 km2 (125-500 thousand acres) annually
+
+and include spillover benefits out to 2 km from each treated pixel (blue colors). Dot-and-whisker plot at right shows
+
+point estimate and 95% CI for cumulative benefits by 2021, for each scenario.
+
+10
+
+
+
+222 to low-severity fires significantly reduce risk of subsequent severe fires in conifer systems, but also that this
+
+223 exposure has large spillovers benefits, in terms of reduced probability of future severe fire for nearby (2-5 km)
+
+224 untreated pixels. While our work is the first to identify these spillovers statistically at large spatial scale and
+
+225 across many fires, it is consistent with other case study evidence that suggests fires limit subsequent fire in
+
+226 nearby areas [35, 46, 37]. We cannot identify this risk reduction in other dominant vegetation types, such as
+
+227 Conifer-Hardwood and Hardwood, as we do not have a large enough sample of low-severity fires to explore
+
+228 this relationship in these settings. Similarly, we find that the response of shrubland and other chaparral
+
+229 systems to low-severity treatments is uncertain, aligning with similar observations that show these systems
+
+230 have much longer natural fire return intervals and often higher severity fires when they occur [15]. Together,
+
+231 these results suggest that simply keeping fire from entering chaparral systems could be more effective than
+
+232 the purposeful use of low-severity fire in limiting impacts of fire on surrounding communities.
+
+233 Our results on the reduction in risk of high severity fire following low severity fire are plausibly the result of
+
+234 low severity fire itself and not well explained by simple mean reversion. First, our synthetic control approach
+
+235 is able to closely match treated pixels to untreated controls that should have the same probability of fire
+
+236 in each year. Second, spillover effects observed in nearby untreated areas are consistent with localized
+
+237 reductions in available fuel loads extending beyond burn perimeters. Third, stronger and more persistent
+
+238 treatment effects in Conifers relative to Shrublands align with the ecological mechanism of slower fuel
+
+239 recovery [26, 15], again suggesting that fuel depletion, rather than regression to the mean, explains our
+
+240 result. Finally, our results align with long-term experimental data that finds a consistent fuel reduction up
+
+241 to seven years after low-severity treatments [44], and that finds shadow effects from treatments in conifers
+
+242 areas [30].
+
+243 Since low-severity fires are a reasonable proxy for prescribed fire burning severity in conifer forests (Fig
+
+244 S10), we use our estimates from low-severity wildfire to simulate a policy where California applies prescribed
+
+245 burning at large scale in the state’s conifer forests (up to 1 million acres/year). We found for a policymaker
+
+246 embarking on this policy, cumulative benefits in terms of smoke reduction would exceed the costs of the
+
+247 added smoke from the initial acreage burned prescribed burning in as early as two years, with benefits
+
+248 exceeding costs by at least three-fold a decade after project initiation. These results are comparable
+
+249 to recent monetized damages estimate that suggests a similar three-fold increase in treatment benefits
+
+250 over burning costs after a single year of treatment [8], although these results do not include air-quality
+
+251 considerations or the potential negative health impacts of prescribed fires [2].
+
+252 Our approach to linking changes in fire activity to resulting smoke relies on a statistical mapping of observed
+
+253 fires to satellite-estimated smoke. An alternate approach would be to couple emissions inventory data on
+
+254 low-severity or prescribed fire with chemical transport models to estimate resulting smoke changes. However,
+
+255 existing work shows that inventory and transport-model-based estimates of wildfire smoke are largely unable
+
+256 to reliably reproduce observed surface wildfire smoke concentrations in the US, raising questions about their
+
+257 applicability in this context [29, 39]. While our statistical approach allows us to quantify and propagate
+
+258 uncertainty in how changes in fire activity affect total smoke concentrations, further refinements of this
+
+259 approach could further reduce uncertainty and improve confidence in our estimated smoke changes.
+
+260 Our results depend on a number of key assumptions. First, our simulation on potential smoke reductions
+
+261 from prescribed burning assumes that treatments are applied exclusively to only conifers, where we have
+
+262 identified large causal effects. Second, we assume that the policymaker does not target treatments but
+
+263 instead applies them randomly to conifer forests across the state without treating them again. To the
+
+264 extent that better targeting is possible – e.g to very high risk fire areas – this implies that our estimates are
+
+265 likely lower bounds on benefits [17, 16]. We estimate that targeting success of observed prescribed burn
+
+11
+
+
+
+266 treatments in CA, in terms of treating areas that later overlap with wildfire, (Methods SI) is on average
+
+267 close to random allocation (Fig S20), suggesting that improvements over the current targeting will be
+
+268 needed to improve policy benefits beyond what we estimate here. Third, we assume pixels are never treated
+
+269 twice, which implies that the beneficial treatment effects will wane over time and disappear after roughly
+
+270 a decade. A policy of re-treating pixels could sustain benefits but would also incur some costs, although
+
+271 smoke emissions could be meaningfully lower in subsequent treatments. Fourth, our estimates of benefits
+
+272 and costs of smoke assume that a unit of wildfire smoke and a unit of smoke from prescribed fire have
+
+273 equivalent costs – specifically, that a 1µg/m3 increase in either has the same health impact. We know of
+
+274 no reliable population health evidence on this equivalence. Existing health impact studies assume equivalent
+
+275 dose-specific impacts [2, 22] and we make the same assumption. Fifth, our estimates of the spillover benefit
+
+276 of low-severity fire to nearby unburned pixels derive from a purposefully-limited subsample of remote fires
+
+277 where other human influences (e.g. roads) are largely removed. As a result, our estimated spillover benefits
+
+278 could be an upper bound on true benefits in settings where these human influences limit fire spread. Sixth,
+
+279 prescribed fires are often combined with other non-emitting fuel treatments, such as mechanical thinning. In
+
+280 combination, both treatments tend to be more effective that burning [45, 36] or thinning alone [27]. Thus
+
+281 our estimates could be an underestimation of the benefits of prescribed fire if an enacted policy combines
+
+282 both treatment types. Finally, our results assume that prescribed fires are always contained. While the
+
+283 probability of escaped treatments is low (close to 2% [18]), high-profile recent escapes such as the 2022
+
+284 Calf Canyon-Hermits Peak Fire in New Mexico which burned more than 260,000 acres, along with more
+
+285 limited weather windows for successful treatments due to climate change [47], suggests that escapes will
+
+286 be an ongoing concern, particular as the scale of treatments is ramped up.
+
+287 Our results could be combined with recent evidence on the mortality [41] and morbidity [20, 21, 19]
+
+288 impacts of wildfire smoke exposure to estimate the specific health damages or benefits from expanded
+
+289 use of prescribed fire. For health outcomes that are roughly linear in smoke exposure (e.g. asthma cases
+
+290 [21, 19]), health benefits will scale directly with overall changes in smoke. If smoke-health dose-response
+
+291 functions are nonlinear, however, as existing work sometimes indicates, reliably estimating health damages
+
+292 will require more precise (e.g. zip-code or county-level) estimates of location-specific smoke impacts from
+
+293 prescribed burning treatments than our current approach can provide. Transport-model-based approaches
+
+294 are an alternative tool to help inform local-level smoke impacts, but such approaches have also not yet
+
+295 proven a reliable tool for estimating surface PM smoke concentrations from existing wildfire emissions
+
+296 inventories [39]. Innovation in this area will be critical for fully characterizing the health benefits of expanded
+
+297 prescribed fire treatments. Nevertheless, despite uncertainty in the magnitude of monetized benefits, our
+
+298 results strongly suggest that a given quantity of prescribed burning yields a large net reduction in overall
+
+299 smoke exposure, and that a sustained policy of large-scale prescribed burning is likely to meaningfully reduce
+
+300 state-wide smoke concentrations, especially in high-wildfire years.
+
+12
+
+
+
+301 References
+
+302 [1] John T. Abatzoglou and A. Park Williams. “Impact of anthropogenic climate change on wildfire
+
+303 across western US forests”. In: Proceedings of the National Academy of Sciences 113.42 (Oct.
+
+304 2016), pp. 11770–11775. DOI: 10.1073/pnas.1607171113.
+
+305 [2] Sadia Afrin and Fernando Garcia-Menendez. “Potential impacts of prescribed fire smoke on public
+
+306 health and socially vulnerable populations in a Southeastern U.S. state”. In: Science of The Total
+
+307 Environment 794 (Nov. 2021), p. 148712. ISSN: 0048-9697. DOI: 10.1016/j.scitotenv.2021.
+
+308 148712.
+
+309 [3] James K. Agee and Carl N. Skinner. “Basic principles of forest fuel reduction treatments”. In: Forest
+
+310 Ecology and Management. Relative Risk Assessments for Decision –Making Related To Uncharacter-
+
+311 istic Wildfire 211.1 (June 2005), pp. 83–96. ISSN: 0378-1127. DOI: 10.1016/j.foreco.2005.01.
+
+312 034.
+
+313 [4] Rosana Aguilera et al. “Wildfire smoke impacts respiratory health more than fine particles from other
+
+314 sources: observational evidence from Southern California”. en. In: Nature Communications 12.1 (Mar.
+
+315 2021), p. 1493. ISSN: 2041-1723. DOI: 10.1038/s41467-021-21708-0.
+
+316 [5] Patrick Baylis and Judson Boomhower. “The Economic Incidence of Wildfire Suppression in the
+
+317 United States”. en. In: American Economic Journal: Applied Economics 15.1 (Jan. 2023), pp. 442–
+
+318 473. ISSN: 1945-7782. DOI: 10.1257/app.20200662.
+
+319 [6] Matthias M. Boer et al. “Long-term impacts of prescribed burning on regional extent and incidence
+
+320 of wildfires—Evidence from 50 years of active fire management in SW Australian forests”. In: Forest
+
+321 Ecology and Management 259.1 (Dec. 2009), pp. 132–142. ISSN: 0378-1127. DOI: 10.1016/j.
+
+322 foreco.2009.10.005.
+
+323 [7] Mark Borgschulte, David Molitor, and Eric Zou. “Air Pollution and the Labor Market: Evidence from
+
+324 Wildfire Smoke”. en. In: (Apr. 2022), w29952. DOI: 10.3386/w29952.
+
+325 [8] Patrick Brown. Cost-Effectiveness of Large-scale Fuel Reduction for Wildfire Mitigation in California.
+
+326 Breakthrough Institute Working Paper, 2025.
+
+327 [9] Marshall Burke et al. “The changing risk and burden of wildfire in the United States”. In: Proceedings
+
+328 of the National Academy of Sciences 118.2 (Jan. 2021), e2011048118. DOI: 10 .1073 /pnas .
+
+329 2011048118.
+
+330 [10] Marshall Burke et al. “The contribution of wildfire to PM2.5 trends in the USA”. en. In: Nature
+
+331 622.7984 (Oct. 2023), pp. 761–766. ISSN: 1476-4687. DOI: 10.1038/s41586-023-06522-6.
+
+332 [11] California Wildfire & Forest Resilience Task Force. “California’s Strategic Plan for Expanding the Use
+
+333 of Beneficial Fire”. en. In: (Mar. 2022).
+
+334 [12] Marissa L. Childs et al. “Daily Local-Level Estimates of Ambient Wildfire Smoke PM2.5 for the
+
+335 Contiguous US”. In: Environmental Science & Technology 56.19 (Oct. 2022), pp. 13607–13621.
+
+336 ISSN: 0013-936X. DOI: 10.1021/acs.est.2c02934.
+
+337 [13] Brandon M. Collins et al. “Interactions Among Wildland Fires in a Long-Established Sierra Nevada
+
+338 Natural Fire Area”. en. In: Ecosystems 12.1 (Feb. 2009), pp. 114–128. ISSN: 1435-0629. DOI:
+
+339 10.1007/s10021-008-9211-7.
+
+340 [14] L. Collins et al. “Fuel reduction burning reduces wildfire severity during extreme fire events in south-
+
+341 eastern Australia”. In: Journal of Environmental Management 343 (Oct. 2023), p. 118171. ISSN:
+
+342 0301-4797. DOI: 10.1016/j.jenvman.2023.118171.
+
+13
+
+
+
+343 [15] Michelle Coppoletta, Kyle E. Merriam, and Brandon M. Collins. “Post-fire vegetation and fuel de-
+
+344 velopment influences fire severity patterns in reburns”. en. In: Ecological Applications 26.3 (2016),
+
+345 pp. 686–699. ISSN: 1939-5582. DOI: 10.1890/15-0225.
+
+346 [16] Kristofer L. Daum et al. “Do Vegetation Fuel Reduction Treatments Alter Forest Fire Severity and
+
+347 Carbon Stability in California Forests?” en. In: Earth’s Future 12.3 (2024), e2023EF003763. ISSN:
+
+348 2328-4277. DOI: 10.1029/2023EF003763.
+
+349 [17] Alison L. Deak et al. “Prescribed fire placement matters more than increasing frequency and extent in
+
+350 a simulated Pacific Northwest landscape”. en. In: Ecosphere 15.4 (2024), e4827. ISSN: 2150-8925.
+
+351 DOI: 10.1002/ecs2.4827.
+
+352 [18] Deirdre Dether and Anne Black. “Learning from Escaped Prescribed Fires – Lessons for High Relia-
+
+353 bility”. In: Fire Management Today 66.4 (2006), pp. 50–56.
+
+354 [19] Carlos F. Gould et al. “Health Effects of Wildfire Smoke Exposure”. en. In: Annual Review of Medicine
+
+355 75.Volume 75, 2024 (Jan. 2024), pp. 277–292. ISSN: 0066-4219, 1545-326X. DOI: 10.1146/
+
+356 annurev-med-052422-020909.
+
+357 [20] Sam Heft-Neal et al. “Associations between wildfire smoke exposure during pregnancy and risk of
+
+358 preterm birth in California”. In: Environmental Research 203 (Jan. 2022), p. 111872. ISSN: 0013-
+
+359 9351. DOI: 10.1016/j.envres.2021.111872.
+
+360 [21] Sam Heft-Neal et al. “Emergency department visits respond nonlinearly to wildfire smoke”. In: Pro-
+
+361 ceedings of the National Academy of Sciences 120.39 (Sept. 2023), e2302409120. DOI: 10.1073/
+
+362 pnas.2302409120.
+
+363 [22] Ran Huang et al. “The Impacts of Prescribed Fire on PM2.5 Air Quality and Human Health: Ap-
+
+364 plication to Asthma-Related Emergency Room Visits in Georgia, USA”. In: International Journal
+
+365 of Environmental Research and Public Health 16.13 (July 2019), p. 2312. ISSN: 1661-7827. DOI:
+
+366 10.3390/ijerph16132312.
+
+367 [23] Timothy Ingalsbee. “Whither the paradigm shift? Large wildland fires and the wildfire paradox offer
+
+368 opportunities for a new paradigm of ecological fire management”. en. In: International Journal of
+
+369 Wildland Fire 26.7 (July 2017), pp. 557–561. ISSN: 1448-5516. DOI: 10.1071/WF17062.
+
+370 [24] Daniel A. Jaffe et al. “Wildfire and prescribed burning impacts on air quality in the United States”.
+
+371 In: Journal of the Air & Waste Management Association 70.6 (June 2020), pp. 583–615. ISSN:
+
+372 1096-2247. DOI: 10.1080/10962247.2020.1749731.
+
+373 [25] Michael Jerrett, Amir S. Jina, and Miriam E. Marlier. “Up in smoke: California’s greenhouse gas
+
+374 reductions could be wiped out by 2020 wildfires”. In: Environmental Pollution 310 (Oct. 2022),
+
+375 p. 119888. ISSN: 0269-7491. DOI: 10.1016/j.envpol.2022.119888.
+
+376 [26] J. E. Keeley. “Fire”. In: Encyclopedia of Ecology. Ed. by Sven Erik Jørgensen and Brian D. Fath.
+
+377 Oxford: Academic Press, Jan. 2008, pp. 1557–1564. ISBN: 978-0-08-045405-4. DOI: 10.1016/B978-
+
+378 008045405-4.00496-1.
+
+379 [27] Makoto Kelp et al. “Effect of Recent Prescribed Burning and Land Management on Wildfire Burn
+
+380 Severity and Smoke Emissions in the Western United States”. en. In: AGU Advances 6.3 (2025),
+
+381 e2025AV001682. ISSN: 2576-604X. DOI: 10.1029/2025AV001682.
+
+382 [28] Makoto M. Kelp et al. “Data-Driven Placement of PM2.5 Air Quality Sensors in the United States: An
+
+383 Approach to Target Urban Environmental Injustice”. en. In: GeoHealth 7.9 (2023), e2023GH000834.
+
+384 ISSN: 2471-1403. DOI: 10.1029/2023GH000834.
+
+14
+
+
+
+385 [29] Shannon N. Koplitz et al. “Influence of uncertainties in burned area estimates on modeled wildland fire
+
+386 PM2.5 and ozone pollution in the contiguous U.S.” In: Atmospheric Environment 191 (Oct. 2018),
+
+387 pp. 328–339. ISSN: 1352-2310. DOI: 10.1016/j.atmosenv.2018.08.020.
+
+388 [30] Kathryn E. Low et al. “Shaded fuel breaks create wildfire-resilient forest stands: lessons from a long-
+
+389 term study in the Sierra Nevada”. In: Fire Ecology 19.1 (May 2023), p. 29. ISSN: 1933-9747. DOI:
+
+390 10.1186/s42408-023-00187-2.
+
+391 [31] Jamie M. Lydersen et al. “Evidence of fuels management and fire weather influencing fire severity in
+
+392 an extreme fire event”. en. In: Ecological Applications 27.7 (2017), pp. 2013–2030. ISSN: 1939-5582.
+
+393 DOI: 10.1002/eap.1586.
+
+394 [32] Kamal J. Maji et al. “Estimated Impacts of Prescribed Fires on Air Quality and Premature Deaths
+
+395 in Georgia and Surrounding Areas in the US, 2015–2020”. In: Environmental Science & Technology
+
+396 58.28 (July 2024), pp. 12343–12355. ISSN: 0013-936X. DOI: 10.1021/acs.est.4c00890.
+
+397 [33] S. A. Parks and J. T. Abatzoglou. “Warmer and Drier Fire Seasons Contribute to Increases in
+
+398 Area Burned at High Severity in Western US Forests From 1985 to 2017”. en. In: Geophysical
+
+399 Research Letters 47.22 (Nov. 2020), e2020GL089858. ISSN: 0094-8276, 1944-8007. DOI: 10 .
+
+400 1029/2020GL089858.
+
+401 [34] Sean A. Parks et al. “Previous Fires Moderate Burn Severity of Subsequent Wildland Fires in Two
+
+402 Large Western US Wilderness Areas”. en. In: Ecosystems 17.1 (Jan. 2014), pp. 29–42. ISSN: 1432-
+
+403 9840, 1435-0629. DOI: 10.1007/s10021-013-9704-x.
+
+404 [35] Sean A. Parks et al. “Wildland fire limits subsequent fire occurrence”. en. In: International Journal of
+
+405 Wildland Fire 25.2 (Nov. 2015), pp. 182–190. ISSN: 1448-5516. DOI: 10.1071/WF15107.
+
+406 [36] Susan J. Prichard and Maureen C. Kennedy. “Fuel treatment effects on tree mortality following
+
+407 wildfire in dry mixed conifer forests, Washington State, USA”. In: International Journal of Wildland
+
+408 Fire 21.8 (Aug. 2012), pp. 1004–1013. ISSN: 1049-8001. DOI: 10.1071/WF11121.
+
+409 [37] Susan J. Prichard, Camille S. Stevens-Rumann, and Paul F. Hessburg. “Tamm Review: Shifting global
+
+410 fire regimes: Lessons from reburns and research needs”. In: Forest Ecology and Management 396
+
+411 (July 2017), pp. 217–233. ISSN: 0378-1127. DOI: 10.1016/j.foreco.2017.03.035.
+
+412 [38] Susan J. Prichard et al. “Adapting western North American forests to climate change and wildfires:
+
+413 10 common questions”. en. In: Ecological Applications 31.8 (2021), e02433. ISSN: 1939-5582. DOI:
+
+414 10.1002/eap.2433.
+
+415 [39] Minghao Qiu et al. “Evaluating Chemical Transport and Machine Learning Models for Wildfire Smoke
+
+416 PM2.5: Implications for Assessment of Health Impacts”. In: Environmental Science & Technology
+
+417 58.52 (Dec. 2024), pp. 22880–22893. ISSN: 0013-936X. DOI: 10.1021/acs.est.4c05922.
+
+418 [40] Minghao Qiu et al. Mortality Burden From Wildfire Smoke Under Climate Change. Working Paper.
+
+419 Apr. 2024. DOI: 10.3386/w32307.
+
+420 [41] Minghao Qiu et al. “Wildfire smoke exposure and mortality burden in the USA under climate change”.
+
+421 en. In: Nature (Sept. 2025), pp. 1–9. ISSN: 1476-4687. DOI: 10.1038/s41586-025-09611-w.
+
+422 [42] Martin W. Ritchie, Carl N. Skinner, and Todd A. Hamilton. “Probability of tree survival after wildfire
+
+423 in an interior pine forest of northern California: Effects of thinning and prescribed fire”. In: Forest
+
+424 Ecology and Management 247.1 (Aug. 2007), pp. 200–208. ISSN: 0378-1127. DOI: 10.1016/j.
+
+425 foreco.2007.04.044.
+
+15
+
+
+
+426 [43] A. F. Stein et al. “NOAA’s HYSPLIT Atmospheric Transport and Dispersion Modeling System”.
+
+427 en. In: Bulletin of the American Meteorological Society 96.12 (Dec. 2015), pp. 2059–2077. ISSN:
+
+428 0003-0007, 1520-0477. DOI: 10.1175/BAMS-D-14-00110.1.
+
+429 [44] Scott L. Stephens, Brandon M. Collins, and Gary Roller. “Fuel treatment longevity in a Sierra Nevada
+
+430 mixed conifer forest”. In: Forest Ecology and Management 285 (Dec. 2012), pp. 204–212. ISSN:
+
+431 0378-1127. DOI: 10.1016/j.foreco.2012.08.030.
+
+432 [45] Scott L. Stephens et al. “The Effects of Forest Fuel-Reduction Treatments in the United States”. In:
+
+433 BioScience 62.6 (June 2012), pp. 549–560. ISSN: 0006-3568. DOI: 10.1525/bio.2012.62.6.6.
+
+434 [46] Camille S. Stevens-Rumann et al. “Prior wildfires influence burn severity of subsequent large fires”.
+
+435 In: Canadian Journal of Forest Research 46.11 (Nov. 2016), pp. 1375–1385. ISSN: 0045-5067. DOI:
+
+436 10.1139/cjfr-2016-0185.
+
+437 [47] Daniel L. Swain et al. “Climate change is narrowing and shifting prescribed fire windows in western
+
+438 United States”. en. In: Communications Earth & Environment 4.1 (Oct. 2023), pp. 1–14. ISSN:
+
+439 2662-4435. DOI: 10.1038/s43247-023-00993-1.
+
+440 [48] Alan H Taylor, Lucas B Harris, and Carl N Skinner. “Severity patterns of the 2021 Dixie Fire exemplify
+
+441 the need to increase low-severity fire treatments in California’s forests”. en. In: Environmental Re-
+
+442 search Letters 17.7 (June 2022), p. 071002. ISSN: 1748-9326. DOI: 10.1088/1748-9326/ac7735.
+
+443 [49] Alan H. Taylor, Lucas B. Harris, and Stacy A. Drury. “Drivers of fire severity shift as landscapes
+
+444 transition to an active fire regime, Klamath Mountains, USA”. en. In: Ecosphere 12.9 (2021), e03734.
+
+445 ISSN: 2150-8925. DOI: 10.1002/ecs2.3734.
+
+446 [50] Alan H. Taylor et al. “Socioecological transitions trigger fire regime shifts and modulate fire–climate
+
+447 interactions in the Sierra Nevada, USA, 1600–2015 CE”. In: Proceedings of the National Academy
+
+448 of Sciences 113.48 (Nov. 2016), pp. 13684–13689. DOI: 10.1073/pnas.1609775113.
+
+449 [51] Casey C. Teske, Carl A. Seielstad, and Lloyd P. Queen. “Characterizing Fire-on-Fire Interactions in
+
+450 Three Large Wilderness Areas”. en. In: Fire Ecology 8.2 (Aug. 2012), pp. 82–106. ISSN: 1933-9747.
+
+451 DOI: 10.4996/fireecology.0802082.
+
+452 [52] Jeff Wen and Marshall Burke. “Lower test scores from wildfire smoke exposure”. en. In: Nature
+
+453 Sustainability 5.11 (Nov. 2022), pp. 947–955. ISSN: 2398-9629. DOI: 10.1038/s41893- 022-
+
+454 00956-y.
+
+455 [53] Jeff Wen et al. “Quantifying fire-specific smoke exposure and health impacts”. In: Proceedings of the
+
+456 National Academy of Sciences 120.51 (Dec. 2023), e2309325120. DOI: 10.1073/pnas.2309325120.
+
+457 [54] G. J. Williamson et al. “A transdisciplinary approach to understanding the health effects of wildfire and
+
+458 prescribed fire smoke regimes”. en. In: Environmental Research Letters 11.12 (Dec. 2016), p. 125009.
+
+459 ISSN: 1748-9326. DOI: 10.1088/1748-9326/11/12/125009.
+
+460 [55] Xiao Wu et al. “Low-intensity fires mitigate the risk of high-intensity wildfires in California’s forests”.
+
+461 In: Science Advances 9.45 (Nov. 2023), eadi4123. DOI: 10.1126/sciadv.adi4123.
+
+462 [56] Qingyuan Zhao. “Covariate balancing propensity score by tailored loss functions”. In: The Annals of
+
+463 Statistics 47.2 (Apr. 2019), pp. 965–993. ISSN: 0090-5364, 2168-8966. DOI: 10.1214/18-AOS1698.
+
+16
+
+
+
+464
+
+465 Methods
+
+466 Our study has three main empirical components: (1) a high-resolution measurement of fire severity across all
+
+467 wildfires over the years 2008-2021; (2) a causal estimation of the impacts of low-severity fire on subsequent
+
+468 fire probability and severity; (3) a estimation of the air quality costs and benefits of a simulated prescribed
+
+469 burn policy. We describe each of these in turn.
+
+470 S1 Wildfire severity measurement
+
+471 Fire severity measurement To capture the impact of wildfires on land and vegetation, we use the dif-
+
+472 ferenced Normalized Burned Ratio (∆NBR) [15], a satellite-derived fire severity index that measures the
+
+473 change in above and below ground biomass for each fire perimeter in the Monitoring Trends in Burning
+
+474 Severity (MTBS) dataset [13] between 2000 and 2021 in California. The ∆NBR index compares the Nor-
+
+475 malized Burned Ratio (NBR) in two different periods, before and after fire, subtracting the post-period
+
+476 from the pre-period, capturing the changes in vegetation explained by fire exposure; higher values of ∆NBR
+
+477 are associated with increased char, consumed fuels, and exposure of mineral soil, and have been shown to
+
+478 be associated with field assessments of burn severity [15]. Following [16], we calculate the ∆NBR using a
+
+479 spatial offset defined as:
+
+(pre) (
+∆NBR = NBRi − post)
+
+NBRi − offseti
+
+480 where we define pre-period and post-period as the fire seasons from the previous and next year from the
+
+481 fire ignition year, respectively.
+
+482 We calculate ∆NBR using imagery from Landsat. For each period, we collect all the overlapping imagery
+
+483 available from Landsat (Collection 2) and calculate the mean composite for the respective fire seasons;
+
+484 we discard all Landsat-7 ETM+ images to avoid data gaps from the Scan Line Corrector (SLC) failure
+
+485 and calculate the composites with single sensor images only whenever is possible. The spatial offset is
+
+486 defined as the average ∆NBR in a 180-meter ring around the perimeter of the wildfire. This offset captures
+
+487 the differences in vegetation phenology and meteorological conditions between periods, allowing a better
+
+488 comparison of severity between fires.
+
+489 As suggested by [14] and [17], the ability of ∆NBR to accurately measure fire severity can be affected by
+
+490 the speed with which vegetation re-sprouts after fire; this is particularly relevant for shrubland, where crown
+
+491 fires are frequent. We address this concern by making the post-period measurement as close to the fire
+
+492 event as possible, as depicted in Figure S1. Using this pipeline, we achieved a 94% coverage of the fires
+
+493 included in the MTBS dataset in the 2001 to 2021 time frame. Our causal and benefit simulation results
+
+494 are robust to this choice about observation window.
+
+495 S2 Causal estimation of the impacts of low-severity fire
+
+496 To quantify the effect of low-severity wildfire treatments (100 ≤ ∆NBR < 270, following [15]) on the future
+497 risk of very severe wildfire and severity, we calculate outcomes for two different treatment samples: the
+
+498 average reduction in future severity among pixels directly treated by low-severity fire, and the same reduction
+
+17
+
+
+
+499 for unburned pixels nearby pixels treated with low-severity fire. To measure both causal estimates, we use
+
+500 pre-treatment covariate data to build synthetic controls for each fire treatment period. In this section we
+
+501 will summarize the process of building a valid treatment counterfactual in our setting.
+
+502 Synthetic control methods (SC) have become widely adopted in social sciences [1, 2, 7] and epidemiology
+
+503 [9] as a way to address the fundamental problem of causal inference [20], or the inability to observe the
+
+504 outcomes of the treated units having not received the treatment. Since its initial introduction by [3], these
+
+505 methods have inspired new research in causal panel data [5] and become an alternative to panel difference-
+
+506 in-differences estimators that rely on strong assumptions about treatment homogeneity and time-varying
+
+507 confounders [6]. In essence, SC methods work by generating a synthetic control group from a unique convex
+
+508 weighting of possible control units with the goal of constructing a control group that closely resembles
+
+509 the treated units in pre-treatment covariates and/or outcomes. Treatment effects are then estimated by
+
+510 comparing treated units to synthetic controls post-treatment. As described below, to balance treated pixels
+
+511 to comparable non-treated controls, we use both pre-treatment outcomes and covariates: a treated and
+
+512 synthetic control pixel are required to have no burning in the 8 years prior to treatment and similar cumulative
+
+513 fire severity prior to that, and similar values of the fire-predictive covariates described in section S2.5.
+
+514 S2.1 Set up
+
+515 Let i ∈ N be a 1 km2 pixel from a sample of forested pixels in California between 2000 and 2021 indexed
+516 in time by t ∈ T . We define the treatment assignment Ai ,T0 as the pixel exposure to low-severity fire on
+517 the treatment period T0, which we call the ”focal year”; this assignment is binary and absorbing, i.e once
+
+518 treated we always consider a pixel treated. Denote Yi ,T0+t(a) the potential outcome in a future period
+
+519 T0 + t, relative to the focal year where t ∈ (1, . . . , T ). We are interested in two types of estimates: (i) the
+520 total change in outcomes Yi ,T0+t(a) captured by the average treatment effect (ATT ) defined in Equation
+
+521 2, and (ii) the change in relative risk after a low-severity fire exposure for each year of exposure (a) and lag
+
+522 (t), which can be interpreted as the percent change in fire frequency [27]:
+
+E[Yi ,t−a(1)|Ait = 1]
+RR(a, t) = (1)
+
+E[Yi ,t−a(0)|Ait = 0]
+
+ATT (a, t) = E[Yi ,t−a(1)− Yi ,t−a(0)|Ai = a] (2)
+
+523 For both estimators described above, we are comparing the outcomes of treated pixels in period t and the
+
+524 outcome had the pixels not received the treatment in a. Thus, they capture the effects in t of adopting
+
+525 the treatment in the focal year (a). Because the units in the ATT (2) are less interpretable (they are in
+
+526 units of ∆NBR), we estimate RR using count of wildfire events as the outcome, such that R̂R(a, t) is
+
+527 the number of treated pixels that had a wildfire (high or very high severity) in year t over the number of
+
+528 synthetic controls that had wildfire (high or very high severity) in that same year. Thus an estimate of
+
+529 R̂R(a, t) = 0.5 suggests that in year t, pixels that were treated in year a were 50% less likely to experience
+
+530 high/very high severity wildfire compared to synthetic control pixels.
+
+531 S2.2 Estimation: Cohort Synthetic Control
+
+532 Building on earlier work [27], we use a SC approach to calculate the estimates defined above. To calculate
+
+533 the estimands defined in 1 and 2, we search for a set of control units that balances pixels covariates’ and
+
+534 outcomes’ historical time series and can serve as a set of control observations for any treatment in a focal
+
+18
+
+
+
+535 year T0. This approach resembles the ideal experiment where we assign Ai randomly in our sample and
+
+536 evaluate the effects in the next periods. To find the set of optimal weights to create a control group
+
+537 (ωi ,a∀i ∈ Nc) for pixels treated in T0, we follow [29] and [28] and find a set of balancing weights that
+538 reduces the distance between the intervention (Nt) and control groups (Nc) covariates’ monthly time series
+
+539 prior to treatment. To do this, we use a set of covariates that combines time-series (xi ,t−a) and static
+
+540 features (xi) for each observation unit for at least eight years before the focal period, as defined in 3.
+
+X = {xi ,t0−8, xi ,t0−7, . . . , xi ,t0−2, xi ,t0−1, xi} (3)
+
+541 Assuming a linear outcome model and a logistic propensity score e(x) = 1/1+e−xθ, we want to find of set
+
+542 of ωi weights that can approximate the covariate trajectories of both exposed and unexposed units for a
+
+543 particular focal period T0:
+
+∑n n
+1 1∑
+
+(1 + e−Xθ̂)ωi ,aXi ≈ Xi (4)
+n n
+i=1 i=1
+
+544 Notice that 4 is defining the first-order conditions for the following optimization problem:
+
+{ ∑ }
+n
+
+1
+θ̂ = argmin ℓθ(Xi , ωi ,a)
+
+θ n
+i=1
+
+ℓθ(Xi , ωi) = ωi ,ae
+−Xiθ + (1− ωi ,a)Xiθ + λ∥θ∥2 (5)
+
+545 We estimate 5 using gradient descent (AdamW) with a L2 regularization. We use a grid search to find the
+
+546 regularization (λ) and learning rate (α) parameters that better minimize our objective loss (ℓθ).
+
+547 Following [27], we estimate balancing weights for each intervention year, or focal year (a), and use these to
+
+548 calculate the effects of the intervention in time a onto the next periods (a + t). We select the best model
+
+549 for each focal year a using the set of parameters with that minimize ℓθ for that year. The figure below
+
+550 shows an example of the estimation process starting in 2008 as the focal year, where we estimate a SC
+
+551 group using a set of weights ωi ,2008 using all the covariates Xi ,a<2008 before in the pre-treatment period, and
+
+552 evaluate the causal effects after the focal year. We repeat this process for each year from 2008 to 2020,
+
+553 making sure that we always have at least 8 years of covariates.
+
+ÂTT (2008+ t) or R̂R(2008+ t)
+2000 2008 2020
+
+ÂTT (2009+ t) or R̂R(2009+ t)
+2009
+
+ÂTT (2010+ t) or R̂R(2010+ t)
+2010
+
+ÂTT (2011+ t) or R̂R(2011+ t)
+2011
+
+. . . . . .
+
+SC cohort design: timeline of estimations using synthetic control. In this example, we estimate different set of
+
+control groups for each focal year in our sample starting from 2008. In this example, all pre-treatment years are
+
+the pre-focal period, and all the years after 2015 the treatment we call evaluation periods. We estimate a different
+
+synthetic control (SC) for each intervention year in the sample a ∈ Ai = {2000, . . . , 2020}, leaving a set of minimum
+8 years to do covariate balancing. For each SC, we calculate the lagged effects from the current treatment in 2015
+
+to the future t: ÂTT (2015, t).
+
+19
+
+
+
+554 We estimate a set of weights ωi ,a for each focal year a to obtain a set of “as-random” control observations
+
+555 of size Nac that is comparable to the pixels exposed to low degree fire in period a, N
+a
+t to calculate the effects
+
+556 in future periods (a + t) using the sample analog estimators of 1 and 2.
+
+N
+1 ∑t N
+
+1 ∑c
+
+ÂTT (a, t) = Yi ,a,t − ωi , Y
+Na a a i,a,t (6)
+t N
+i=1 c i=1
+
+E[Yi ,t−a(1)|ωi ,a = 1]
+R̂R(a, t) =
+
+E[Yi ,t−a(0)|
+(7)
+
+ωi ,a = 0]
+
+557 S2.3 Inference
+
+558 Having estimated SC weights for all the focal years from 2008 to 2020 (a′), we can use these to calculate
+
+559 treatment effects for all the outcome years in the evaluation period after the focal year (a′ > a). We show
+
+560 these estimates for the risk ratio estimator for Conifers in Figure S5, where the point size captures the
+
+561 precision of each estimate. Variation in precision is driven by variation over time in the observed frequency
+
+562 of fire types of different severities; in years with low fire activity, such as 2015 and 2016, relative risk
+
+563 estimates are imprecise. To improve the interpretability of these effects, and following [27], we pool the
+
+564 estimates using a log-linear relationship (Eq 8) using all the estimates across focal year (a) and lags after
+
+565 treatment (t) using a weighted quasi-Poisson regression, where we weight each RR estimate by the number
+
+566 of burned pixels at a given severity within the SC group for t period.
+
+log R̂R(a, t) = α+ β · t + εi (8)
+
+567 We calculate the standard errors of β using jackknife standard errors where we cluster all observations within
+
+568 a particular lag (t). This leave-one-out sampling process accounts for the variation in fire activity across
+
+569 the focal years and the fact that a pixel observation can be both part of a SC in one lag and a treated pixel
+
+570 for another lag. We follow a similar approach to pool the ÂTT . For these estimates, we assume a linear
+
+571 relationship between the average effects and the lags using a weighted OLS, using the individual variances
+
+572 of each ÂTT as weights in the regression. Just as with the risk ratio estimation, where the estimator
+
+573 precision can vary across focal years and where we assume a particular functional form, we also weight our
+
+574 ÂTT estimator pooling taking into account the estimator precision, although we assume a linear fitting.
+
+575 We show in Figure S11A the non-pooled ATT estimates for Conifers (just like Fig S5) and an OLS fit (Eq
+
+576 9) in S11B using a similar jackknife approach as in the RR estimates. We use these ATT estimates in our
+
+577 simulations to calculate the causal change in severity due to the treatment.
+
+ÂTT (a, t) = α+ β · t + εi (9)
+
+578 To calculate the variances of the ÂTT defined in 6, we derivate an expression for the variance using M-
+
+579 estimation:
+
+[
+1 ∑Nt ∑ ]
+
+Nc
+
+V(ÂTT (a, t)) = (Y 2
+i ,a,t − µ1,i ,t) − ω2
+
+n2 i ,a(Y
+2
+
+i ,a,t − µ0,i ,t) (10)
+t i=1 i=1
+
+580 where µ1 and µ0 correspond to the weighted sample mean for both treatment and control, respectively.
+
+581 Notice from 6, µ0 is the unweighted sample mean of the treatment. These variances are used as weights
+
+582 in 9 to take into account the differences in treatment and control compositions of each focal year. While
+
+20
+
+
+
+583 a bootstrap approach is also possible giving less conservative estimators of the variance, estimating ωi is
+
+584 computationally harder in our setting [19]. Results are robust to alternate approaches to pooling estimates
+
+585 at each lag (t), including using a simple averaging that computes the weighted average effects separately
+
+586 in each year using the number of control pixels as weights, and a unweighted least-squares fit to the lag
+
+587 estimates (Fig S19)
+
+588 S2.4 Spillover estimation
+
+589 To calculate the spillover effects of wildfire exposure in our sample, we re-define treatments as a function
+
+590 of proximity to a wildfire boundary. Figure 3 shows an example of this approach with the 2020 August
+
+591 Fire, depicting different distances to the boundary from 2 km to 15 km. To calculate spillovers, we define
+
+592 treated units as pixels at different distances from pixels that burned at low severity. Following the same
+
+593 approach for the direct exposure, we calculate a set of weights ωi ,a for each focal year (a) and calculate
+
+594 both causal estimators: the average change in severity (ÂTT (a, t)) and the risk ratio of the treatment
+
+595 (R̂R(a, t)).
+
+596 One possible concern with this distance-based identification strategy is that observed fires boundaries could
+
+597 reflect various factors (e.g the presence of roads, or amplified suppression effort near communities) that
+
+598 would also shape subsequent burn risk in nearby areas. To reduce the importance of these potential un-
+
+599 observed factors, we restrict our sample to ”remote” fires that are further from human activity, which we
+
+600 define as wildfires that within 10 kilometers of their boundary are below the median of the state population
+
+601 density (Fig S6A), using spatially interpolated population census data from the Gridded Population of the
+
+602 Word (V4) dataset [10] between 2005 and 2015. This leaves us with an effective sample of 943 wildfires,
+
+603 all comparable in terms of acreage (t-test on difference in means: t = −0.74; p > 0.5) and severity
+604 (t = −1.70; p > 0.05) with the full MTBS sample. To consider possible migration patterns or inherent
+605 changes in population structure within our analysis time frame, we use the closest census estimate to the
+
+606 wildfire start year when applying this population density filter.
+
+607 Since these estimates are also used in our simulation of prescribed burning where treatments are smaller,
+
+608 an additional concern is that we will overestimate spillovers if typically larger low-severity wildfires are more
+
+609 limiting than smaller prescribed fires. To address this concerns as best we can in available data, we use the
+
+610 same pipeline described but limit the sample to wildfires below the 25-percentile (< 4,000 acres) of burned
+
+611 acreage in our remote fire sample. We show that our main spillover estimates still largely hold in this sample
+
+612 of smaller fires, although estimates are somewhat noisier given smaller sample sizes (Fig S12).
+
+613 S2.5 Covariates including in balancing
+
+614 Weather Monthly means, minimums, and maximums of surface temperature, rainfall, vapor pressure
+
+615 deficit (VPD), and dew-point for each pixel are derived from PRISM [12]. This product calculates daily
+
+616 estimates for these variables at a 4 km2 resolution from the continental United States. We are particularly
+
+617 interested in rainfall and VPD have given their singular influence over fire vulnerability. Increases of the
+
+618 latter are associated with an increase in burned area, particularly in areas where vegetation is water-limited
+
+619 [18, 21, 22]
+
+620 Vegetation We use fractional vegetation cover at a 30-meter resolution in California from 1985 to 2021
+
+621 [23] to calculate the proportion of different vegetation types per each pixel in our 1 km2. We use these to
+
+622 capture within-pixel vegetation cover variations across time that can influence fire through fuel availabil-
+
+623 ity.
+
+21
+
+
+
+624 Disturbances To compare pixels with similar disturbances and fire experiences, we use data from the Fire
+
+625 Information for Resources Management System (FIRMS) from March 2000 to 2021. In particular, we use
+
+626 the Fire Radiative Power (FRP) captured by MODIS Terra (MOD09GA) and Aqua (MYD09GA) collections to
+
+627 capture the fire intensity history for each 1 km2 pixel in our dataset. We calculate the monthly maximum
+
+628 FRP for the balancing period using the maximum measurement per each day over for each pixel.
+
+629 Additionally, we use a vegetation disturbances database at a 30-meter resolution in California from 1984
+
+630 and 2021 [24] which measures different vegetation disturbances (i.e. browning or tree mortality). Fires can
+
+631 drive structural changes in vegetation as areas as constantly exposed to wildfires, thus accounting for these
+
+632 changes is important for a balancing strategy.
+
+633 Physical attributes We use a global standardized elevation model [4] as an input to calculate slope and
+
+634 elevation at a 1 km2 resolution, using Python’s xarray-spatial slope algorithm.
+
+635 S3 Simulating the air quality benefits of a prescribed fire policy
+
+636 To estimate the potential costs and benefits of a prescribed fire policy for air quality, we build a simple
+
+637 model that compares the air quality impacts of the wildfires that occurred between 2010-2020, to what
+
+638 we estimate would have happened had a given prescribed burn policy been enacted over that period. The
+
+639 difference between these two scenarios depends on a number of key parameters, including: the number of
+
+640 pixels treated with low severity fire under the policy; the reduction in future fire severity achieved by an
+
+641 initial low severity treatment, which includes the probability that an initial treated pixel actual burns in a
+
+642 subsequent wildfire; the smoke emitted from low-severity treatments and the reduction in smoke during
+
+643 subsequent wildfires resulting from any changes to fire severity.
+
+644 A two period model of prescribed fire treatments Consider the simplest setting with two periods:
+
+645 τ − 1 when the prescribed fire policy is enacted and its costs (in terms of emitted smoke) are realized, and
+646 period τ , the after-treatment period where wildfires occur and any benefits of reduced wildfire severity and
+
+647 reductions in emitted smoke are realized. In τ − 1, our simulation randomly allocates a given number of
+648 pixels Rxτ−1 to be treated by prescribed fire; these are pixels where no treatment or wildfire had happened
+
+649 previously in our sample period (See Fig S8). This implies that a pixel can only be treated once during the
+
+650 simulation.
+
+651 We calculate the ”cost” of this treatment as the change in surface concentration of smoke PM2.5 resulting
+
+652 from the treatments. To estimate this cost, we match each of k fires in the MTBS database (our primary
+
+653 sample) to the set of fires studied in an earlier analysis that attributed observed smoke PM2.5 concentrations
+
+654 to individual fires [25], successfully matching 488 (or 64.2%) of the wildfires in the MTBS dataset over the
+
+655 2006-2020 period. The matched sample is representative of the overall distribution of ∆NBR in California
+
+656 for the 2000-2021 period (Figure S9B), and includes 45 large prescribed fires. We then flexibly estimate
+
+657 the relationship between average burn severity and attributed smoke at the fire level, controlling for fire size
+
+658 and the number of days over which each fire burned (X k), and additionally for a set of year fixed effects
+
+659 (δt) that accounts for state-wide annual trends in burn severity and smoke PM2.5:
+
+PM2.5 = δ + f (∆NBR ) +
+k,t τ k,t γX k + εk,t (11)
+
+660 The outcome PM2.5 is defined by [25] as the cumulative effect of fire k on surface-level smoke PM
+k,t
+
+661 concentrations, which is calculated in that paper as the product of the number of days a given pixel was
+
+662 affected by smoke from that fire multiplied by the smoke concentration on affected days, summed over
+
+22
+
+
+
+663 affected pixels. As argued by [25], this integrated measure of smoke exposure is a good proxy for health
+
+664 impacts so long as a given health outcome of interest is linear in smoke exposure; that study provides
+
+665 evidence that many such outcomes appear to be linear. ”Linearity” here is equivalent to assuming that
+
+666 a fire that raises surface concentrations for 10µg/m3 on two days is twice as harmful as a fire that raises
+
+667 concentrations by 10µg/m3 for one day, that a fire that raises surface concentrations for 10µg/m3 on two
+
+pixels for a day is twice as bad as a fire that raises concentrations by 10µg/m3668 for one pixel, and that a fire
+3
+
+669 that raises surface concentrations by 5µg/m on two pixels for a day is equivalently harmful to a fire that
+
+670 raises concentrations by 10µg/m3 for one pixel.
+
+671 We fit f (·) using polynomials of order d ∈ {1, · · · , 9}. To avoid over-fitting, we sample a 80-20 train-test
+672 split of our data and pick the best polynomial fit using the lowest RMSE as the evaluation metric. Fig S9A
+
+673 shows the best fit, which happens to be the linear model. Denote fPM2.5 the linear estimate shown in Fig
+
+674 S9A, which maps changes in burn severity to changes in surface smoke concentration.
+
+675 Denote ∆NBR as the average treatment severity from prescribed fire treatments, which we estimate as a
+
+676 range of ∆NBR between 45 and 100 from our matched MTBS sample that includes 45 prescribed fires. We
+
+677 then calculate the summed cost of the prescribed fire treatment in terms of the smoke it generates:
+
+Cτ−1 = fPM2.5 (Rxτ−1 × ∆NBR ) (12)
+
+678 To calculate the subsequent benefits of this treatment in terms of reduced smoke, we track treated pixels
+
+679 in the post-treatment period (τ), during which pixels either don’t burn in subsequent wildfire or burn at
+
+680 observed severity ∆NBRi ,τ (i.e. at the severity values we observe in the MTBS data). When pixels are
+
+681 observed to burn, we adjust observed severity based on whether pixel i happened to be treated in the previous
+
+682 period, using our ATT estimates of the impact of low severity treatments on future severity, which here
+
+683 we denote β∆NBRτ . To capture uncertainty in these treatment effects, we sample from the distribution of
+
+684 the estimator given by β∆NBRτ ∼ N (β, ŜEβ̂). We then calculate the pixel-level (i) change in the observed
+685 severity ∆NBRi ,τ as a result of any treatments that occurred in the previous period.
+
+∆NBRRx NBR
+i,τ = ∆NBRi ,τ + β
+
+∆
+τ × 1Rx × 1 (13)
+
+i Fi
+
+686 where 1Rx is an indicator for whether pixel i was treated with prescribed fire, and 1
+i F is whether pixel ii
+
+687 subsequently burned in a wildfire. This equation makes clear that the benefit of reduced fire severity β∆NBRτ
+
+688 is only realized if the pixel is both treated and is exposed to subsequent wildfire. If the pixel is not treated
+
+689 or is treated and has no subsequent wildfire exposure, then it will keep the observed ∆NBRi ,τ value.
+
+690 To model the spillover benefits from prescribed fires, we add an additional term to Equation 13 to capture
+
+691 the spillover:
+
+∆NBRRxi,τ = ∆NBRi ,τ + β︸ ∆NBRτ ×︷1︷Rx × 1 + δ︸∆NBRi F︸i τ × 1R︷x︷ × 1 14)
+i F × Si ︸i (
+
+direct effect spillover effect
+
+692 where Si is the number of nearby spillover pixels affected for every burned pixel. Our main spillover results
+
+693 suggest that reductions in burn severity are observed up to 5 km from a fire boundary. Thus for every 1 km
+
+694 pixel treated, Si is 24 under a 2 km spillover - i.e. 24 pixels around the treated pixel get benefits δ
+∆NBR
+τ ).
+
+695 In practice, at higher treatment levels, Si is substantially less than 24 under a 2 km spillover, as most of
+
+696 CA forest receives treatment after a decade of large annual treatments (see below).
+
+23
+
+
+
+697 For every treated pixel that happened to be treated in observed fire k , we then aggregate Equation 13 or
+
+698 14 to the fire level, such that we get the total sum of severity for a particular fire k :
+
+∑
+∆NBRRx = ∆NBRRxk,τ i,τ (15)
+
+i∈k
+
+699 Finally, to calculate benefits (BRxτ ) in terms of changes in surface smoke PM2.5 , we use the above-estimated
+
+700 fPM2.5(·) to translate changes in fire specific severity to fire specific total contributed smoke. For each fire
+701 k , we estimate the smoke that occurred under observed severity (fPM2.5(∆NBRk,τ )) as compared to the
+
+702 smoke that would have occurred had at least some pixels been treated in the perimeter of fire k prior to k
+
+703 having burned (fPM2.5(∆NBR
+Rx
+k,τ )). These can be identical if there are no prescribed fire treatment areas in
+
+704 a particular wildfire; in this case the benefits from treatment will be zero. We aggregate across all fires in
+
+705 CA in a given year τ to arrive at total PM2.5 benefits:
+
+∑
+B x
+τ = fPM2.5(∆NBRk,τ )− fPM2.5(∆NBRRk,τ ) (16)
+
+k
+
+706 These smoke benefits can then be compared to the smoke costs defined in Equation 12, for instance (as
+
+707 below) by taking the ratio of cumulative smoke reductions (benefits) to initial smoke costs. We note that
+
+708 if fPM2.5() is linear, then the benefit-cost ratio of prescribed burning, in terms of smoke reduction, is simply
+
+709 the ratio of the reduction in wildfire severity from burning to the increase in severity from the prescribed
+
+710 burn itself.
+
+711 Aggregating benefits across treatment years As calculated above, treatment benefits depend on the
+
+712 observed wildfire history, with treatments having larger benefits in high fire years. The probability of fire
+
+713 can vary substantially across years; in our data we calculate that in California conifer forests, the probability
+
+714 any pixel burned in 2020 was 20.13% as compared to 0.6% in 2010. To ensure that our estimates of the
+
+715 time path of benefits of prescribed fire treatments do not depend on the specific sequence of fire years
+
+716 in our observed data, we run our simulation multiple times, each time using a different start year. This
+
+717 ensures that our estimated benefit two years after treatment is the expected value of the benefits in year
+
+718 two, given the range of possible fire years that could have occurred two years after a given start year in our
+
+719 data. Specifically, for each year starting in 2010 and going through 2020, we start a treatment simulation
+
+720 as described above (Fig S8), calculating benefits in every available subsequent period until the end of our
+
+721 simulation in 2021. Thus for the first year in 2010, we will calculate treatment benefits for the eleven
+
+722 subsequent years following treatments that begin in 2010; denote benefits in each year in this setting as
+1
+
+723 B12010, B
+1
+2010, ... B
+
+1
+2010. For treatments that begin in 2020, we can only calculate the benefits B
+
+1
+2020 for the
+
+724 immediate year after treatment is begun (2021). Benefits estimated in each simulation can be summarized
+
+725 in the matrix BRx (Eq 17) where each row represents a simulation beginning in the subscript year and each
+
+726 column is a period relative to the treatment (column 1 is first year of treatment, column 2 the second year,
+
+727 and so on). In our experiment, our matrix has a size of 10 rows by 11 columns.
+
+ 
+B
+
+1 2 B10 11
+
+ 2010 B2010 · · · 2010 B2010
+
+ 
+B12011 B22011 · · · B102011 NA 
+
+BRx = B1 2012 B22012 · · · NA NA  17)
+.. . . 
+. .. · · · .  (
+
+. NA 
+B12020 NA · · · NA NA
+
+24
+
+
+
+728 To estimate the average benefit a policy would generate in the years following treatment, we then average
+
+729 all the benefits for each period relative to the treatment across different start years, i.e. take the column
+
+730 average of our benefits matrix, yielding the average benefits sequence for all the periods relative to the
+
+7 treatment: {Bτ+1Rx , B
+τ+2
+Rx , . . . , B
+
+τ+11
+31 Rx }.
+
+732 We then calculate the ratio of cumulative benefits to∑costs in year T after treatment τ = 0 as:T 1
+τ=0 (1+δ)τ B
+
+τ
+Rx
+
+Net Benefitτ = (18)
+Cτ−1
+
+733 where δ is the discount rate, which we vary from 2% to 10%, the latter representing a ”political” discount
+
+734 rate for a policymaker with a preference for policies that pay out quickly. Estimates of Equation 18 are
+
+735 reported in Fig 4 under different discount rates and with and without spillovers, and represent the ratio
+
+736 of discounted expected cumulative smoke benefits to initial smoke costs of treating an acre of conifers in
+
+737 California with prescribed fire.
+
+738 Uncertainty quantification To quantify total uncertainty in cumulative net benefits estimated in Equation
+
+739 18, we incorporate two possible sources of uncertainty on each of our simulation runs (1,000 runs in
+
+740 total). First, we randomly allocate treatments, drawing pixels without replacement from the universe of
+
+741 conifer forests in California to take into account the treatment location uncertainty. We also draw without
+
+742 replacement across treatment years to avoid treating the same place more than once in our experiment.
+
+743 Second, for each realization of treatment locations, we use a different draw of the β∆NBRτ parameter, such
+
+744 that we capture the treatment effect uncertainty. Finally, we show the average net benefit of treatment
+
+745 of all the treatment years in Fig 4 under different discount factors (δ) with the uncertainty estimations
+
+746 defined above. We note that we do not propagate uncertainty in estimates of fPM2.5(·), given that any linear
+747 estimate of the function will show up in both the numerator and denominator of the net benefit ratios we
+
+748 report, and thus cancel.
+
+749 Spillover estimation To estimate spillover benefits, we first define the size of the spillover that determines
+
+750 Si in Equation 14. Following the results in Figure 3, we conservatively assume that spillovers are only present
+
+751 within 2 km of the treatment. This implies that for each 1 km2 area directly treated with fire, an additional
+
+752 24 km2 (Si = 24) receive “spillover” treatments. However, because we restrict our simulation to only
+
+753 apply treatments to pixels who have not experienced any previous treatment (direct or spillover), we do not
+
+754 re-treat pixels within the 2 km2 buffer that have already experienced either direct or spillover treatment.
+
+755 As total treated area grows across our decade-long simulation, this implies that Si in practice decreases
+
+756 substantially over time (Fig S13), consistent with a real-world setting in which most areas have already
+
+757 received treatment after a decade of high annual treatments. This is depicted in Fig S21. On average Si
+ranges from an initial value of 24 down to 7 by the end of a decade, under annual treatments of 2,000 km2758
+
+759 (500,000 acres/year).
+
+760 Quantifying changes in state smoke concentrations To calculate the reduction in overall wildfire smoke
+
+761 under different policy scenarios at the state level, we calculate the ratio between the predicted smoke
+
+762 concentrations under the observed severity and the predicted concentrations for each simulated treatment,
+
+763 taking into account the increase in smoke from the treatments themselves, the reduction from the impacts
+
+764 of treatments of future fire severity, and that treatments are applied every year and that the effect of one
+
+765 year’s treatment persists into future years.
+
+766 Specifically, for each year of the policy, we calculate the cumulative percent change of the policy since its
+
+767 enactment:
+
+25
+
+
+
+∑T
+M2.5(Rxτ × ∆NBR )−∑[∑ ]
+fP 2.5(∆NBRk,τ )− fPM2.5(∆NBRRx
+
+%∆Smoke ratio k fPM ,τ )
+τ =
+
+k (19)
+=2010 k fPM2.5(∆NBRk,τ )τ
+
+768 where the first term in the numerator is the smoke emitted from the treatments in that year and the second
+
+769 term in brackets in the numerator is the benefits from Rx treatments in terms of the reduction in smoke in
+
+770 subsequent wildfires, as calculated in Equation 16. The denominator is the smoke from observed wildfire.
+
+771 The resulting estimate is then the percent increase in cumulative smoke from the prescribed burning policy
+
+772 relative to had the policy not occurred. Results are shown in Fig 5C.
+
+773 Policy targeting As spatial treatment targeting – i.e. the probability that a pixel treated with low-severity
+
+774 fire is later exposed to wildfire – plays a key role in the realized benefits in Equation 15, we quantify
+
+775 this parameter for both our simulated policies (where pixels are randomly allocated to treatment) and the
+
+776 relatively small number of observed prescribed fire treatments reported by the CalFIRE’s Fire and Resource
+
+777 Assessment Program dataset from 2010 to 2021 (1860 total treatments covering 1, 189 km2). To calculate
+
+778 this parameter we compute the cumulative share of any simulated or observed treatment to encounter a
+
+779 wildfire in the years after treatment. Formally, we count the number of initial treated pixels that later
+
+overlapped with a wildfire footprint in year t as ( tf ) and divide it for the number of treatments R
+t=0
+
+780 1 x in the
+
+781 initial year:
+
+∑T τ
+1
+
+S = τ=0 f
+T (20)
+
+Rt=0x
+
+782 In this calculation we only include the dominant and relevant type of prescribed burning: broadcast burning,
+
+783 as this type is the one most comparable to our analysis. Including other types (e.g. Fire Use, Jackpot, or
+
+784 Machine Pile burn) does not change this calculation significantly. We report the average of this cumulative
+
+785 share (ST ) across all the treatment years (2010 - 2020) in Fig S20, such that (for instance) the “2 years
+
+786 after treatment” estimate is the average number of pixels treated in 2010 that burned by 2012, treated in
+
+787 2011 that burned by 2013, treated in 2012 that burned by 2014, etc. Estimates thus combine low burn
+
+788 probabilities early in the sample with much higher burn probabilities later in the sample (2020 and 2021 in
+
+789 particular).
+
+26
+
+
+
+790 Supplemental Figures
+
+(a) ∆NBR
+Pre-fire NBR Post-fire NBR
+
+Jun 1st Sep 30th t Jun 1st Sep 30th time
+
+Fire season (t − 1) Fire season (t + 1)
+
+(b) “Immediate” ∆NBR
+Pre-fire NBR Post-fire NBR (6 months after fire)
+
+Jun 1st Sep 30th t t + 3 t + 6 time
+
+Fire season (t − 1)
+
+Figure S1: ∆NBR Calculation for a fire occurring in t: We use two strategies to measure ∆NBR following [16].
+
+In the panel a. both pre-fire and post-fire periods are measured within the previous and next year’s fire season,
+
+respectively. In panelb, and to capture the severity in vegetation with rapid re-sprouting, we modify the post-fire
+
+period to be defined between the next 3-months after the ignition date, through up to 6 months afterwards.
+
+27
+
+
+
+Figure S2: Synthetic control balancing weights. a. We calculate the absolute weighted standardized differences
+
+(AWSD) for all the covariates used in our covariate balancing strategy for each of the evaluated years and land types.
+
+For all the monthly variables, like precipitation, we took the average AWSD to capture the general balance along
+
+the time series. Pixel physical attributes have slighter large differences between treatment and control groups, but
+
+is still less than 0.2, the standard for RCTs. b. Average balancing weight (ωi) for each land type; colors correspond
+
+to categories in A. This is the weight assigned to each control unit on average across all of the focal years (2008 -
+
+2020).
+
+28
+
+
+
+Figure S3: Impact of low severity treatments on subsequent fire risk in non-conifer land types.We explore the
+
+effect of the low-severity treatment across non-conifer land cover types in California. Results are mixed for Conifer-
+
+Hardwood and Hardwood. For shrublands, we observe an immediate reduction in subsequent risk for all fire types,
+
+with an immediate reduction of 42% [95% CI: 53,3 - 25.8], but this effect much noisier when considering impact
+
+only on subsequent risk of high severity fire
+
+.
+
+29
+
+
+
+Figure S4: Severity class distribution across land types. a. The distribution of positive values of severity across
+
+land types for all wildfire events in the MTBS sample from 2000 to 2021. The dotted line is the threshold of
+
+low-severity (0 ≤ ∆NBR < 270). Conifers and Shurblands are wildfires’ dominant vegetation and more than half of
+the pixels burn at low-severity b. Severity timelines for each land type using the same classification we use to define
+
+relative risks in the regression results: all wildfires include all detectable severity classes (∆NBR ≥ 0), high-severity
+(270 ≥ ∆NBR ≥ 660), and very high-severity (∆NBR ≥ 660). Colors match vegetation types in a..
+
+30
+
+
+
+All wildfires High severity Very high severity
+15.0
+
+4 12.5 1.0
+
+3 10.0 0.8
+
+7.5 0.6
+2
+
+5.0 0.4
+1 2.5 0.2
+
+0 0.0
+1 2 3 4 5 6 7 8 9 10 11 12 13 1 2 3 4 5 6 7 8 9 10 11 12 13 1 2 3 4 5 6 7 8 9 10 11 12 13
+
+Years from treatment Years from treatment Years from treatment
+
+2008 2010 2012 2014 2016 2018 2020
+Focal year
+
+Figure S5: Pooling of Relative Risk estimates: Non-pooled estimates that underlie pooled results reported in Figure
+
+2. Each point represents the raw relative risk (RR) estimates for each focal year and comparison group. The size
+
+of the point represents the size of the control group (wildfires, high-severity or very-high severity) in the synthetic
+
+control estimates, corresponding to the precision of the individual relative risk estimates. Lighter shaded points
+
+represent early years in the sample, while dark points are treatments close to the end of the study sample
+
+31
+
+Relative Risk [RR]
+
+Relative Risk [RR]
+
+Relative Risk [RR]
+
+
+
+Figure S6: Synthetic control balancing for spillovers: a. Shows the population-based inclusion criteria to estimate
+
+the MTBS wildfire events spillovers effects. Here we use the [10] Gridded Population of the World (V4) to calculate
+
+the population density for each fire in a 10 km buffer around the fire using the closest census year to the year event.
+
+We estimate the effects with remote fires only, meaning all the wildfires with populations less than the sample median
+
+in the buffer. b. Absolute weighted standardized differences for each of the spillover effects at different spillover
+
+distances. These values show a robust pre-treatment balance for all years, with the exception of the land type as
+
+these estimations are done with all possible land types.
+
+32
+
+
+
+Figure S7: Spillover effects of low-severity fire on subsequent fire risk in nearby unburned pixels, for different
+
+fire types and buffer widths. Rows show different distance buffers over which spillover treatments are defined (2
+
+km buffer up to 15 km buffer) and columns show the effect of low-severity fire in a treated pixel on all wildfires or
+
+high/ very-high severity wildfires in nearby unburned pixels. As in Figure 3, the limiting effect of previous wildfire
+
+burn scars on nearby fire risk is statistically significant and protective against all wildfires, including very high severity
+
+ones, within 2 km of the burn scar. This effect decays with distance from the treated pixel, and the large effects
+
+over very-high severity is only observed at the immediacy of the burn boundary. The first column is equivalent to
+
+the results shown in Fig 3.
+
+33
+
+
+
+Figure S8: Low-severity treatments simulation: a. Example of the coverage of a treatment application (1 M acres)
+
+simulation applied to all conifer forest in California starting in 2010, showing treated pixels in the perimeter of the
+
+subsequent 2020 Creek Fire. By the last year of treatment in this simulation, the Creek fire has at least 75% of
+
+its area covered by previous treatments. b. Change in severity classes in the observed data and the simulated data.
+
+The effect of the treatment is mostly visible in high-severity areas, where we estimate an average severity reduction
+
+of 23.2%. c. Distribution of ∆NBR in the observed data compared to the simulation counterfactual in the Creek
+
+Fire and across CA as a whole for the 2011 to 2021 period, where each line represents a different simulation run.
+
+34
+
+
+
+Figure S9: Relationship between fire severity and fire attributed smoke PM2.5. a. Relationship between the
+
+fire-specific attributed smoke particulate matter (PM2.5) from [25] and average fire severity, based on large wildfires
+
+( > 1,000 ha.) in the MTBS sample from 2006 to 2020 that could be matched to the fires in [25]. Plot shows
+
+the fit between the total severity and the attributed smoke PM2.5 for different polynomial degrees; the linear model
+
+had the lowest RMSE on held out data, and is shown with , 95% confidence interval. b. Severity distribution for all
+
+matched fires compared to the total number of wildfires in the 2006-2020 period
+
+35
+
+
+
+Figure S10: Low-severity wildfires are comparable to prescribed fires in severity. Using the limited set of prescribed
+
+fires reported in the MTBS dataset, we compare the severity distribution of these fire treatments against the low-
+
+severity wildfires in our sample from 2000 to 2021. We found that the two samples along the threshold of low-severity
+
+supporting the hypothesis of low-severity treatments as a valid proxy to fire treatments across different land types.
+
+36
+
+
+
+Figure S11: Average change in severity of the direct and spillover exposure to wildfire: Just as Figure 2, we
+
+estimate the effect of low-severity treatments on the average reduction of future wildfires. Rather than calculating
+
+the change in relative risk of high-severity or very-high severity, we quantify the total change on average severity
+
+(∆NBR) after the exposure using the ATT estimator. For both panels we pool individual estimates using the variance
+
+weighted linear fit of the estimates across the lags [Methods SI]. We represent the variance of each un-pooled ATT
+
+estimate using the point size, where larger points represent more precise estimates; a. shows the non-pooled and
+
+pooled results of the effect of low-severity fire on subsequent fire severity on conifers by focal year b. shows the
+
+same but for the spillover effects.
+
+37
+
+
+
+Figure S12: Small wildfires (< 4, 000 acres) reduce subsequent fire risk in surrounding unburned areas: a. We
+
+replicate the results shown in Figure 3 using only the fires under the median of the total burned acreage from our
+
+sample of remote fires (xmed ≈ 4, 000 acres). Compared to the full sample, the spillover (or “shadow”) effects of
+small wildfires are slightly smaller that for larger fires (33.2 % [CI 95%: 20.8% - 43.7%]) but still significant for 9
+
+years within 2 km of the wildfire. For larger distances the effect either vanishes or is close to zero. This shows that
+
+even in small burned areas, we can observe the limiting effect of wildfires. b. We show the AWSD for the estimates
+
+in panel a, with our SC method again balancing covariates successfully across different treatment years.
+
+38
+
+
+
+Figure S13: Limits to prescribed fire treatments with spillovers (≤ 2 km): We calculate the total number of
+available treatments in our simulations with spillovers under the restriction of no re-burning for any treated pixel
+
+(Methods SI). We see that treating 500 km2 with 2 km spillovers is almost equivalent to treating 4,000 acres each
+
+year. As we increase the number of treatments, the number of cumulative treated area increases almost linearly, until
+
+converging to the total of conifer areas in California. Notice that the no re-burning restriction creates a non-linear
+
+behavior in the number of treatments as with an increase of the treatments the sample of available conifers to burn
+
+is smaller, so it converges almost logarithmically to the total number of conifers. We see that as a result, this alters
+
+the benefits under different number of treatments with a fixed spillover distance as seen in Figure S14.
+
+Figure S14: Emissions Net Benefit ratios by spillover treatments: We show the same exercise as Figure 4 using
+
+a fixed spillover distance (≤ 2 km) and a 2% discount factor under different treatment sizes. Each panel uses a
+different number of treatments from 500 to 2,000 (≈ 500,000 acres) with a fixed number of spillovers. The 2,000
+treatment size would almost treat every pixel classified as conifer in the state, and would run out of treatments in
+
+10 years, thus the reduction in the benefit-cost ratio compared to other treatment sizes where treatments can be
+
+realized.
+
+39
+
+
+
+Figure S15: Benefit cost ratio for different discount rates: Just as Figure 4, we show the cumulative present value
+
+discounted benefit-cost ratio for a prescribed fire policy under different discount factors. The left panel of the figure
+
+shows the ratio of the treatment of 1 million acres/year without considering any spillovers. The right columns shows
+
+the benefit-cost ratio of a 500 kilometer/year (124,000 acres/year) with spillover effects up to 2 km2.
+
+40
+
+
+
+Figure S16: Role of fire suppression in treatment effect estimates. a. Restricting study sample to wilderness
+
+areas, where suppression efforts are often lower, offers an opportunity to study the role of suppression in treatment
+
+effect estimates, but most fires occur outside wilderness areas and some years have no low-severity treatments. b.
+
+Fire suppression costs per acre (from from [8]) do not vary by average burn severity of each fire. c-d. Low-severity
+
+treatments reduce the future fire severity in wilderness areas. As in Fig S11, left panel shows individual focal-year
+
+estimates of the ATT, and right panel shows pooled OLS fits to the individual data; green line is pooled estimate
+
+for wilderness areas, black line is the full-sample estimate for comparison.
+
+41
+
+
+
+Figure S17: Fire Severity and fire intensity and their relationship with emissions. Using fire intensity data -Fire
+
+Radiative Power (FRP)- from MODIS derived measurements (MOD09GA) and MYD09GA and fire severity (∆NBR) data
+
+from the Landsat 2 collection for all fires in the MTBS wildfire and prescribed fires dataset. a. shows the raw
+
+relationship between severity and intensity. The inset zooms over the low-intensity (0 - 100 MW) and shows that
+
+many low-intensity pixels have all severity classes, including very high-severity (¿500 ∆NBR). b. Using FINN [26], an
+
+emissions inventory dataset, we show that intensity and severity are not necessarily equally correlated to emissions
+
+from wildfires.
+
+Figure S18: Average Smoke PM2.5 concentration changes in CA as a result of simulated prescribed burning
+
+policies. a. Average population-weighted smoke PM2.5 concentrations for the state under the simulated policies
+
+and the observed concentrations (dashed line) using data from [11]. Following estimates in [25] we assume that
+
+88% of CA smoke concentrations originate from fires in CA, meaning that a prescribed burning policy in CA can
+
+only affect this proportion of smoke that originates from withing the state. b. Average reduction in smoke PM2.5
+concentrations from the different simulated policies, relative to observed smoke.
+
+42
+
+
+
+Figure S19: Protective effect of low-severity fires with alternate pooling. a. We pool the individual R̂R estimates
+
+and lag using a weighted average. We include the original log-linear pooling from our main results (see Fig 2 in the
+
+manuscript) in gray for comparison. b. Protective effect of low-severity fires with a linear pooling, fit with OLS with
+
+no weighting, again compared with our main log-linear estimate. For visualization purposes we remove R̂R > 2, but
+
+they are included in our pooling regression.
+
+43
+
+
+
+Figure S20: Targeting of simulated and observed prescribed fire policy. We calculate the policy targeting for
+
+both the simulated and observed prescribe fire policies as the average cumulative share of treatment area across
+
+all treatment years that overlaps with areas identified as wildfires in the MTBS dataset. The observed prescribed
+
+fire policy is taken from all broadcast prescribed fires in the CalFIRE FIRMS dataset (2010 - 2021) and shows how
+
+random simulations approximate the observed treatment targeting.
+
+2 km 2 km
+
+(a) Complete spillovers (Si = 24) (b) Incomplete spillovers (Si = 17)
+
+Figure S21: Simulating spillovers in simulations: To define spillovers in our simulations, we draw a 2 km2 buffer
+
+around the treated pixel (dark orange) only including the neighboring pixels whose centroid is inside the buffer. When
+
+all neighboring pixels have not been treated, the spillover area is 24 km2 as shown in (a). Since in our simulations
+
+we do not apply treatments in areas previously treated, we often have incomplete spillover areas (as shown in (b))
+
+as previously treated pixels are removed from the spillover and then spillover areas are smaller than the optimal 25
+
+km2. This explains why often we have a diminishing number of treatments when we increase the number of treated
+
+areas with spillovers (Fig S13).
+
+44
+
+
+
+791 Supplemental Tables
+
+Parameter Description
+
+β∆NBRi,τ , From the estimates in the first section of the paper, we calculate the change in severity in
+
+δ∆NBRi,τ period τ given the exposure to a treatment in the year of exposure (τ = 0) for an specific
+
+vegetation-type pixel i ∈ S (Fig S11) Additionally, we also estimate the spillover effects
+(δ∆NBR) for a given treatment. These last ones do not vary by vegetation type.
+
+nfτ The number of exposed pixels to fire in the year of exposure τ from the MTBS dataset.
+
+fPM2.5 The relationship between fire-attributed smoke PM2.5 concentrations (µg/m3), integrated
+
+over time and space, and fire-specific summed severity.
+
+Rx The number of pixels we expose to Rx treatment.
+
+∆NBR The average treatment severity from prescribed fire treatments. Following our MTBS data
+
+we estimate this is ∆NBR ≈ 90).
+P(F )τ The observed probability that an arbitrary pixel in California burns in wildfire in any given
+
+year.
+
+Table S1: Simulation parameters: Parameters used to estimate our prescribed fire policy simulations.
+
+45
+
+
+
+792 References
+
+793 [1] Alberto Abadie, Alexis Diamond, and Jens Hainmueller. “Comparative Politics and the Synthetic
+
+794 Control Method”. en. In: American Journal of Political Science 59.2 (Feb. 2015), pp. 495–510.
+
+795 ISSN: 00925853. DOI: 10.1111/ajps.12116.
+
+796 [2] Alberto Abadie, Alexis Diamond, and Jens Hainmueller. “Synthetic Control Methods for Comparative
+
+797 Case Studies: Estimating the Effect of California’s Tobacco Control Program”. In: Journal of the
+
+798 American Statistical Association 105.490 (June 2010), pp. 493–505. ISSN: 0162-1459. DOI: 10.
+
+799 1198/jasa.2009.ap08746.
+
+800 [3] Alberto Abadie and Javier Gardeazabal. “The Economic Costs of Conflict: A Case Study of the Basque
+
+801 Country”. en. In: American Economic Review 93.1 (Mar. 2003), pp. 113–132. ISSN: 0002-8282. DOI:
+
+802 10.1257/000282803321455188.
+
+803 [4] Giuseppe Amatulli et al. “A suite of global, cross-scale topographic variables for environmental and
+
+804 biodiversity modeling”. en. In: Scientific Data 5.1 (Mar. 2018), p. 180040. ISSN: 2052-4463. DOI:
+
+805 10.1038/sdata.2018.40.
+
+806 [5] Dmitry Arkhangelsky and Guido Imbens. “Causal models for longitudinal and panel data: a survey”.
+
+807 In: The Econometrics Journal 27.3 (Sept. 2024), pp. C1–C61. ISSN: 1368-4221. DOI: 10.1093/
+
+808 ectj/utae014.
+
+809 [6] Dmitry Arkhangelsky et al. “Synthetic Difference-in-Differences”. en. In: American Economic Review
+
+810 111.12 (Dec. 2021), pp. 4088–4118. ISSN: 0002-8282. DOI: 10.1257/aer.20190159.
+
+811 [7] Susan Athey and Guido W. Imbens. “The State of Applied Econometrics: Causality and Policy Evalu-
+
+812 ation”. en. In: Journal of Economic Perspectives 31.2 (May 2017), pp. 3–32. ISSN: 0895-3309. DOI:
+
+813 10.1257/jep.31.2.3.
+
+814 [8] Patrick Baylis and Judson Boomhower. “The Economic Incidence of Wildfire Suppression in the
+
+815 United States”. en. In: American Economic Journal: Applied Economics 15.1 (Jan. 2023), pp. 442–
+
+816 473. ISSN: 1945-7782. DOI: 10.1257/app.20200662.
+
+817 [9] Janet Bouttell et al. “Synthetic control methodology as a tool for evaluating population-level health
+
+818 interventions”. en. In: J Epidemiol Community Health 72.8 (Aug. 2018), pp. 673–678. ISSN: 0143-
+
+819 005X, 1470-2738. DOI: 10.1136/jech-2017-210106.
+
+820 [10] Center For International Earth Science Information Network (CIESIN). Gridded Population of the
+
+821 World, Version 4 (GPWv4): Population Density Adjusted to Match 2015 Revision UN WPP Country
+
+822 Totals, Revision 11. 2018. DOI: 10.7927/H4F47M65.
+
+823 [11] Marissa L. Childs et al. “Daily Local-Level Estimates of Ambient Wildfire Smoke PM2.5 for the
+
+824 Contiguous US”. In: Environmental Science & Technology 56.19 (Oct. 2022), pp. 13607–13621.
+
+825 ISSN: 0013-936X. DOI: 10.1021/acs.est.2c02934.
+
+826 [12] Christopher Daly et al. “Physiographically sensitive mapping of climatological temperature and pre-
+
+827 cipitation across the conterminous United States”. en. In: International Journal of Climatology 28.15
+
+828 (2008), pp. 2031–2064. ISSN: 1097-0088. DOI: 10.1002/joc.1688.
+
+829 [13] Jeff Eidenshink et al. “A Project for Monitoring Trends in Burn Severity”. en. In: Fire Ecology 3.1
+
+830 (June 2007), pp. 3–21. ISSN: 1933-9747. DOI: 10.4996/fireecology.0301003.
+
+831 [14] Jon E. Keeley. “Fire intensity, fire severity and burn severity: a brief review and suggested usage”.
+
+832 en. In: International Journal of Wildland Fire 18.1 (Feb. 2009), pp. 116–126. ISSN: 1448-5516,
+
+833 1448-5516. DOI: 10.1071/WF07049.
+
+46
+
+
+
+834 [15] Carl H Key and Nathan C Benson. “Landscape Assessment (LA)”. en. In: (2006).
+
+835 [16] Sean A. Parks et al. “Mean Composite Fire Severity Metrics Computed with Google Earth Engine
+
+836 Offer Improved Accuracy and Expanded Mapping Potential”. en. In: Remote Sensing 10.6 (June
+
+837 2018), p. 879. ISSN: 2072-4292. DOI: 10.3390/rs10060879.
+
+838 [17] Sean A. Parks et al. “Previous Fires Moderate Burn Severity of Subsequent Wildland Fires in Two
+
+839 Large Western US Wilderness Areas”. en. In: Ecosystems 17.1 (Jan. 2014), pp. 29–42. ISSN: 1432-
+
+840 9840, 1435-0629. DOI: 10.1007/s10021-013-9704-x.
+
+841 [18] Krishna Rao et al. “Plant-water sensitivity regulates wildfire vulnerability”. en. In: Nature Ecology &
+
+842 Evolution 6.3 (Mar. 2022), pp. 332–339. ISSN: 2397-334X. DOI: 10.1038/s41559-021-01654-2.
+
+843 [19] Sarah A Reifeis and Michael G Hudgens. “On Variance of the Treatment Effect in the Treated When
+
+844 Estimated by Inverse Probability Weighting”. In: American Journal of Epidemiology 191.6 (May
+
+845 2022), pp. 1092–1097. ISSN: 0002-9262. DOI: 10.1093/aje/kwac014.
+
+846 [20] Donald Rubin. “Estimating Causal Effects of Treatments in Experimental and Observational Studies”.
+
+847 en. In: ETS Research Bulletin Series 1972.2 (1972), pp. i–31. ISSN: 2333-8504. DOI: 10.1002/j.
+
+848 2333-8504.1972.tb00631.x.
+
+849 [21] Daniel L. Swain et al. “Climate change is narrowing and shifting prescribed fire windows in western
+
+850 United States”. en. In: Communications Earth & Environment 4.1 (Oct. 2023), pp. 1–14. ISSN:
+
+851 2662-4435. DOI: 10.1038/s43247-023-00993-1.
+
+852 [22] Daniel L. Swain et al. “Hydroclimate volatility on a warming Earth”. en. In: Nature Reviews Earth &
+
+853 Environment 6.1 (Jan. 2025), pp. 35–50. ISSN: 2662-138X. DOI: 10.1038/s43017-024-00624-z.
+
+854 [23] Jonathan Wang. Fractional vegetation cover in California, 1985 - 2023. en. Nov. 2024. DOI: 10.
+
+855 7910/DVN/KMBYYM.
+
+856 [24] Jonathan A. Wang et al. “Losses of Tree Cover in California Driven by Increasing Fire Disturbance
+
+857 and Climate Stress”. en. In: AGU Advances 3.4 (2022), e2021AV000654. ISSN: 2576-604X. DOI:
+
+858 10.1029/2021AV000654.
+
+859 [25] Jeff Wen et al. “Quantifying fire-specific smoke exposure and health impacts”. In: Proceedings of the
+
+860 National Academy of Sciences 120.51 (Dec. 2023), e2309325120. DOI: 10.1073/pnas.2309325120.
+
+861 [26] Christine Wiedinmyer et al. “The Fire Inventory from NCAR version 2.5: an updated global fire
+
+862 emissions model for climate and chemistry applications”. English. In: Geoscientific Model Development
+
+863 16.13 (July 2023), pp. 3873–3891. ISSN: 1991-959X. DOI: 10.5194/gmd-16-3873-2023.
+
+864 [27] Xiao Wu et al. “Low-intensity fires mitigate the risk of high-intensity wildfires in California’s forests”.
+
+865 In: Science Advances 9.45 (Nov. 2023), eadi4123. DOI: 10.1126/sciadv.adi4123.
+
+866 [28] Qingyuan Zhao. “Covariate balancing propensity score by tailored loss functions”. In: The Annals of
+
+867 Statistics 47.2 (Apr. 2019), pp. 965–993. ISSN: 0090-5364, 2168-8966. DOI: 10.1214/18-AOS1698.
+
+868 [29] José R. Zubizarreta. “Stable Weights that Balance Covariates for Estimation With Incomplete Out-
+
+869 come Data”. In: Journal of the American Statistical Association 110.511 (July 2015), pp. 910–922.
+
+870 ISSN: 0162-1459. DOI: 10.1080/01621459.2015.1023805.
+
+871
+
+47

@@ -324,4 +324,3 @@ ggsave(file.path(resDir, "results", paste0("evalue_combined_rev_linear.jpeg")),
        width = 14 / 1.6*2,
        height = 8.5 / 1.6*3,
        units = "in")
-
