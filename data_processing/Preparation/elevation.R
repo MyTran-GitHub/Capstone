@@ -23,6 +23,8 @@ elev <- raster(file.path(Dir, "elevation_1KMmd_GMTEDmd.tif"))
 elev_ca <- crop(elev, extent(CA_bound))
 #elev_ca <- mask(elev_ca, CA_bound)
 
+
+# Use only conifer-masked grid for all spatial extraction
 fveg_grid_ca_poly <- readRDS(file.path(outDir, "fveg_grid_ca_poly.RDS"))
 
 #elev_grid_ca <- raster::extract(elev_ca, fveg_grid_ca_poly, na.rm = TRUE)

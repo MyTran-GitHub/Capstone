@@ -4,12 +4,26 @@ library("sf")
 library("tidyverse")
 
 outDir <- "/data/processed_data"
+outDir <- "../data/processed_data"
 
+# Load conifer-only grid (created by vegetation_class.R)
+fveg_grid_ca <- readRDS(file.path(outDir, "fveg_grid_ca.RDS"))
+
+# Load FIRMS and filter to conifer cells only
 fire.df <- readRDS(file.path(outDir, "FIRMS.RDS"))
 
-fire.df$unit <- paste0(fire.df$LATITUDE, fire.df$LONGITUDE)
 st_geometry(fire.df) <- NULL
-fire.df.u <- unique(fire.df[c("unit")])
+
+# Add unit column for join
+fire.df$unit <- paste0(fire.df$LATITUDE, fire.df$LONGITUDE)
+fveg_grid_ca$unit <- paste0(fveg_grid_ca$LATITUDE, fveg_grid_ca$LONGITUDE)
+
+# Filter FIRMS to conifer cells only
+fire.df <- fire.df[fire.df$unit %in% fveg_grid_ca$unit, ]
+
+# Use only conifer grid
+df <- fveg_grid_ca[,1:2]
+df$unit <- paste0(df$LATITUDE, df$LONGITUDE)
 
 # define unit by the standardized geographic coordinates
 gpw_grid_ca = readRDS(file.path(outDir, "gpw_grid_ca.RDS"))
@@ -52,4 +66,6 @@ for (j in 2000:2021) {
 df <- df[,-3]
 
 write_fst(df, path = file.path(outDir, "fire_brightness_frp.fst"))
-message("✓ Created fire brightness and FRP data")
+write_fst(df, path = file.path(outDir, "fire_brightness_frp_conifer.fst"))
+saveRDS(df, file = file.path(outDir, "fire_brightness_frp_conifer.RDS"))
+message("✓ Created conifer-only fire brightness and FRP data")

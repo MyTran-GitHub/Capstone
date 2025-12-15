@@ -6,23 +6,31 @@ library(dplyr)
 library("parallel")
 library(xtable)
 
+
 Dir = "../data/raw_data/"
 outDir = "../data/processed_data/"
+
+# Load conifer-only grid (created by vegetation_class.R)
+fveg_grid_ca_poly <- readRDS(file.path(outDir, "fveg_grid_ca_poly.RDS"))
+
 
 obj = st_read(file.path(Dir, "cb_2020_us_state_500k", "cb_2020_us_state_500k.shp"))
 CA_bound = subset(obj, NAME == "California")
 
+# Use only conifer-masked grid for all spatial extraction
 fveg_elev_grid_ca_poly <- readRDS(file.path(outDir, "fveg_elev_grid_ca_poly.RDS"))
 
 #long-term burn monitoring assessments (https://www.mtbs.gov/)
+
+# Mask MTBS rasters to conifer grid only
 mtbs.list <- mclapply(2001:2020, function(fire_year) {
-#long-term burn monitoring assessments (https://www.mtbs.gov/)
   mtbs_CA <- raster(file.path(Dir, 
                            "fires",
                            paste0("mtbs_CA_", fire_year),
                            paste0("mtbs_CA_", fire_year, ".tif")))
-  
-  return(table(getValues(mtbs_CA))*0.0009)
+  # Mask to conifer grid
+  mtbs_CA_conifer <- raster::mask(mtbs_CA, fveg_grid_ca_poly)
+  return(table(getValues(mtbs_CA_conifer))*0.0009)
 }, mc.cores = 10)
 
 mtbs.df <- t(sapply(mtbs.list, function(list) {
@@ -35,6 +43,7 @@ mtbs.df <- t(sapply(mtbs.list, function(list) {
 
 write.csv(format(mtbs.df[,c("1","2","3")], digits=1, nsmall=0), file = "mtbs.csv")
 
+
 llprj <-  "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +towgs84=0,0,0"
 projected_mtbs.list <- mclapply(2001:2020, function(fire_year) {
   mtbs_CA <- raster(file.path(Dir, 
@@ -42,8 +51,9 @@ projected_mtbs.list <- mclapply(2001:2020, function(fire_year) {
                               paste0("mtbs_CA_", fire_year),
                               paste0("mtbs_CA_", fire_year, ".tif")))
   projected_mtbs_CA <- projectRaster(mtbs_CA, crs = llprj, method = "ngb")
-  mtbs_grid_ca_poly <- raster::extract(projected_mtbs_CA, fveg_elev_grid_ca_poly, fun = modal, na.rm = TRUE)
-  
+  # Mask to conifer grid
+  projected_mtbs_CA_conifer <- raster::mask(projected_mtbs_CA, fveg_grid_ca_poly)
+  mtbs_grid_ca_poly <- raster::extract(projected_mtbs_CA_conifer, fveg_elev_grid_ca_poly, fun = modal, na.rm = TRUE)
   return(mtbs_grid_ca_poly)
 }, mc.cores = 10)
 
