@@ -3,7 +3,7 @@ library(fst)
 library("sf")
 library("tidyverse")
 
-outDir <- "../data/processed_data"
+outDir <- "/data/processed_data"
 
 fire.df <- readRDS(file.path(outDir, "FIRMS.RDS"))
 
@@ -52,5 +52,4 @@ for (j in 2000:2021) {
 df <- df[,-3]
 
 write_fst(df, path = file.path(outDir, "fire_brightness_frp.fst"))
-
-
+message("✓ Created fire brightness and FRP data")
