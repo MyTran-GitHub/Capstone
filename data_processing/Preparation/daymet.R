@@ -13,6 +13,7 @@ library("fst")
 library(ncdf4) # package for netcdf manipulation
 library(velox)
 
+
 Dir = "../data/raw_data/"
 outDir = "../data/processed_data/"
 
@@ -29,9 +30,10 @@ gpw_grid_ca <- readRDS(paste0(Dir, "gpw_grid_ca.RDS"))
 var_climate <- c("minat","maxat","prcp","wvp","swe")
 parameters <- expand.grid(2000:2020, var_climate)
 
-gridclimate_mon <- data.frame(matrix(NA,nrow = nrow(gpw_grid_ca), ncol = 0))
-gridclimate_mon$LATITUDE = gpw_grid_ca$LATITUDE
-gridclimate_mon$LONGITUDE = gpw_grid_ca$LONGITUDE
+
+# Use only conifer grid for output
+fveg_grid_ca <- readRDS(file.path(outDir, "fveg_grid_ca.RDS"))
+gridclimate_mon <- data.frame(LATITUDE = gpw_grid_ca$LATITUDE, LONGITUDE = gpw_grid_ca$LONGITUDE)
 
 
 for (par in 1:nrow(parameters)) {
@@ -57,6 +59,9 @@ for (par in 1:nrow(parameters)) {
   gridclimate_mon <- cbind(gridclimate_mon, gridclimate_n_df)
 }
 
-write_fst(gridclimate_mon, path = paste0(outDir, "gridClimate_mon2.fst"))
+
+# Filter/join to conifer grid before saving
+gridclimate_mon <- dplyr::inner_join(fveg_grid_ca[,c("LONGITUDE", "LATITUDE")], gridclimate_mon, by = c("LONGITUDE", "LATITUDE"))
+write_fst(gridclimate_mon, path = paste0(outDir, "gridClimate_mon2_conifer.fst"))
 
 

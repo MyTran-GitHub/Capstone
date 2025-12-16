@@ -61,5 +61,7 @@ if (!dir.exists(outDir)) dir.create(outDir, recursive = TRUE)
 saveRDS(fveg_grid_ca_poly, file = file.path(outDir, "fveg_grid_ca_poly.RDS"))
 saveRDS(fveg_grid_ca, file = file.path(outDir, "fveg_grid_ca.RDS"))
 
+# save a CSV version as well
+write.csv(fveg_grid_ca[, c("LONGITUDE", "LATITUDE")], file = file.path(outDir, "conifer_grid_points.csv"), row.names = FALSE)
 ## Visual check
 plot(fveg_grid_ca_poly["conifer"])
