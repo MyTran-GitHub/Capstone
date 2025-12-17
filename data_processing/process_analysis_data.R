@@ -14,8 +14,7 @@ outDir = "../data/processed_data/"
 
 #year up to 2020
 parameters <- expand.grid(c(2005:2020), c("conifer", "hardwood"))
-# year_area = 1                          
-for (year_area in 1:nrow(parameters)) {
+for (year_area in seq_len(nrow(parameters))) {
   treated.year <- as.numeric(parameters[year_area, 1])
   area <- as.character(parameters[year_area, 2])
   

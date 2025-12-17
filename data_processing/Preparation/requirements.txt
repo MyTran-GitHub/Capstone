@@ -1,0 +1,15 @@
+fsspec
+numpy
+xarray[complete]
+zarr
+shapely
+pandas
+pystac
+tqdm
+pyshp
+requests
+aiohttp
+planetary-computer
+matplotlib
+scipy
+netCDF4

@@ -47,7 +47,7 @@ fire.df.new <- do.call(rbind, Q)
 var <- c("fire", "avg_BRIGHTNESS", "max_FRP")
 parameters <- expand.grid(2000:2021, var)
 
-for (par in 1:nrow(parameters)) {
+for (par in seq_len(nrow(parameters))) {
   dfn <- data.frame(matrix(0, nrow = nrow(df), ncol = 1))
   colnames(dfn) <- paste0(parameters[par, 2], "_", parameters[par, 1])
   df <- cbind(df, dfn)
@@ -55,10 +55,11 @@ for (par in 1:nrow(parameters)) {
 
 for (j in 2000:2021) {
   p <- subset(fire.df.new, year == j)
-      index <- match(p$unit, df$unit)
-      df[index, paste0("fire_", j)] <- 1
+  index <- match(p$unit, df$unit)
+  df[index, paste0("fire_", j)] <- 1
+
       
-      for (i in 1:length(index)) {
+      for (i in seq_len(length(index))) {
         df[index[i], paste0("avg_BRIGHTNESS_", j)] <- p$avg_BRIGHTNESS[i]
         df[index[i], paste0("max_FRP_", j)] <- p$max_FRP[i]
       }   

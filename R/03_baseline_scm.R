@@ -101,7 +101,7 @@ ggsave(file.path("figures", paste0("pre_fit_", treated_unit, ".png")), gg_pre, w
 # Post-treatment comparison (extend 3 years)
 post_years <- focal_year:(focal_year + 3)
 treated_post <- dat %>% filter(unit == treated_unit, year %in% post_years) %>% arrange(year)
-donor_post_matrix <- sapply(1:ncol(donor_matrix), function(j) {
+donor_post_matrix <- sapply(seq_len(ncol(donor_matrix)), function(j) {
   u <- donor_units[j]
   s <- dat %>% filter(unit == u, year %in% post_years) %>% arrange(year)
   if (nrow(s) == length(post_years)) s$max_FRP else rep(NA_real_, length(post_years))

@@ -36,7 +36,7 @@ fveg_grid_ca <- readRDS(file.path(outDir, "fveg_grid_ca.RDS"))
 gridclimate_mon <- data.frame(LATITUDE = gpw_grid_ca$LATITUDE, LONGITUDE = gpw_grid_ca$LONGITUDE)
 
 
-for (par in 1:nrow(parameters)) {
+for (par in seq_len(nrow(parameters))) {
   
   gridclimate_n_list <- lapply(1:12, function(months) {
     stack <- stack(paste0(Dir, parameters[par, 2], "_", as.numeric(parameters[par,1]),
