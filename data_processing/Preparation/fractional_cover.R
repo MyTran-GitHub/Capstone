@@ -4,8 +4,8 @@ library(sf)
 library(raster)
 library(fst)
 
-Dir = "/data/raw_data/"
-outDir = "/data/processed_data/"
+Dir = "data/raw_data"
+outDir = "data/processed_data"
 
 # Read conifer grid polygons
 fveg_grid_ca_poly <- readRDS(file.path(outDir, "fveg_grid_ca_poly.RDS"))
@@ -13,45 +13,64 @@ fveg_grid_ca_poly <- readRDS(file.path(outDir, "fveg_grid_ca_poly.RDS"))
 # Years to process
 years <- 2000:2020
 fracveg_dir <- file.path(Dir, "fractional_vegetation")
+# --- Optimization: Parallelization, exactextractr, CRS, memory, error handling ---
+cat("Starting extraction for years:", paste(years, collapse=", "), "\n")
+#if (!requireNamespace("pbmcapply", quietly = TRUE)) install.packages("pbmcapply")
+#if (!requireNamespace("exactextractr", quietly = TRUE)) install.packages("exactextractr")
+library(pbmcapply)
+library(exactextractr)
+# Pre-transform grid CRS if all rasters share the same CRS
+test_raster <- raster(file.path(fracveg_dir, paste0("fractional_vegetation_", years[1], ".tif")))
+target_crs <- sf::st_crs(test_raster)
+grid <- fveg_grid_ca_poly
+if (!identical(sf::st_crs(grid), target_crs)) {
+  cat("Transforming grid CRS to match rasters...\n")
+  grid <- sf::st_transform(grid, crs = target_crs)
+}
+cat("Grid CRS transformation complete.\n")
+rm(test_raster); gc()
 
-# Check all files exist
-missing_files <- years[!file.exists(file.path(fracveg_dir, paste0("fractional_vegetation_", years, ".tif")))]
-if (length(missing_files) > 0) stop("Missing raster files for years: ", paste(missing_files, collapse=", "))
-
-# Extract mean tree cover for each grid cell and year
-tree_cover_summary.list <- lapply(years, function(year) {
-  raster_file <- file.path(fracveg_dir, paste0("fractional_vegetation_", year, ".tif"))
+# Use multicore parallelization and exactextractr for extraction
+tree_cover_summary.list <- pbmcapply::pbmclapply(years, function(year) {
+  tryCatch({
+    cat("Processing year:", year, "...\n")
+    raster_file <- file.path(fracveg_dir, paste0("fractional_vegetation_", year, ".tif"))
   r <- raster(raster_file)
-  # Reproject grid if needed
-  grid <- fveg_grid_ca_poly
-  if (!compareCRS(st_crs(grid), crs(r))) {
-    grid <- st_transform(grid, crs = crs(r))
-  }
-  # Extract mean tree cover for each polygon
-  tree_cover <- raster::extract(r, grid, fun = mean, na.rm = TRUE)
-  df <- st_drop_geometry(grid)[,c("LONGITUDE", "LATITUDE")]
+  # Extract mean tree cover for each polygon using exactextractr
+  tree_cover <- exactextractr::exact_extract(r, grid, 'mean')
+  df <- st_drop_geometry(grid) %>% dplyr::select(LONGITUDE, LATITUDE)
+  required_cols <- c("LONGITUDE", "LATITUDE")
+  missing_cols <- setdiff(required_cols, colnames(df))
+    if (length(missing_cols) > 0) {
+      stop("Required column(s) missing from grid: ", paste(missing_cols, collapse = ", "))
+    }
   df$tree_cover <- tree_cover
   colnames(df)[3] <- paste0("tree_cover_", year)
-  df
-})
-
-# Merge all years by LONGITUDE, LATITUDE
+  cat("  Finished year:", year, "\n")
+    rm(r); gc()
+    df
+  }, error = function(e) {
+    cat("Error in year", year, ":", conditionMessage(e), "\n")
+    NULL
+  })
+}, mc.cores = parallel::detectCores())
+cat("Finished extraction for all years.\n")
+tree_cover_summary.list <- Filter(Negate(is.null), tree_cover_summary.list)
+gc()
+cat("Merging all years by LONGITUDE, LATITUDE...\n")
 tree_cover_summary <- Reduce(function(x, y) merge(x, y, by =c("LONGITUDE", "LATITUDE"), all = TRUE), 
                              tree_cover_summary.list)
+cat("Merge complete.\n")
 
-# Replace NA with 0 (if desired)
+cat("Replacing NA values with 0...\n")
 tree_cover_summary[] <- lapply(tree_cover_summary, function(x) replace(x, is.na(x), 0))
-
-# Save for analysis
+cat("NA replacement complete.\n")
+cat("Saving output to:", file.path(outDir, "tree_cover.fst"), "\n")
 write_fst(tree_cover_summary, path = file.path(outDir, "tree_cover.fst"))
-
-## Visual check
-df_joined = st_drop_geometry(df_joined)
-df_joined <- df_joined %>%
-  group_by(LONGITUDE, LATITUDE) %>%
-  summarise(tree_cover = max(tree_cover, na.rm = TRUE))
-# 
-df_joined = st_drop_geometry(df_joined)
+cat("File saved.\n")
+# Example plot for verification
+#
+df_joined <- st_drop_geometry(df)
 df_joined <- st_as_sf(df_joined,
                       coords = c("LONGITUDE", "LATITUDE"),
                       crs = 4326,
@@ -62,6 +81,4 @@ ggplot(data = df_joined) +
   geom_sf(aes(fill = tree_cover)) +
   scale_fill_gradient(low = "blue", high = "red") +
   theme_minimal()
-
-
 

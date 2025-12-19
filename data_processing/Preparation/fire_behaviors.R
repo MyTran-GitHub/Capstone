@@ -1,39 +1,49 @@
-# Process historical FIRMS fire info, used as pre-treatment covariates in covariate balance (value 0 if no fires)
 library(fst)
-library("sf")
-library("tidyverse")
+library(sf)
+library(tidyverse)
 
-outDir <- "/data/processed_data"
-outDir <- "../data/processed_data"
+outDir <- "data/processed_data"
 
 # Load conifer-only grid (created by vegetation_class.R)
 fveg_grid_ca <- readRDS(file.path(outDir, "fveg_grid_ca.RDS"))
+# If not an sf object, convert and set CRS
+if (!inherits(fveg_grid_ca, "sf")) {
+  fveg_grid_ca <- sf::st_as_sf(fveg_grid_ca, coords = c("LONGITUDE", "LATITUDE"), crs = 4326, remove = FALSE)
+}
+# If CRS is missing, set to WGS84
+if (is.na(sf::st_crs(fveg_grid_ca))) {
+  sf::st_crs(fveg_grid_ca) <- sf::st_crs(4326)
+}
 
-# Load FIRMS and filter to conifer cells only
+# Load FIRMS and ensure CRS matches conifer grid
 fire.df <- readRDS(file.path(outDir, "FIRMS.RDS"))
-
+# If not an sf object, convert and set CRS
+if (!inherits(fire.df, "sf")) {
+  fire.df <- sf::st_as_sf(fire.df, coords = c("LONGITUDE", "LATITUDE"), crs = 4326, remove = FALSE)
+}
+# If CRS is missing, set to WGS84
+if (is.na(sf::st_crs(fire.df))) {
+  sf::st_crs(fire.df) <- sf::st_crs(4326)
+}
+if (!is.null(st_crs(fveg_grid_ca)) && !is.null(st_crs(fire.df)) && st_crs(fveg_grid_ca) != st_crs(fire.df)) {
+  fire.df <- st_transform(fire.df, st_crs(fveg_grid_ca))
+}
 st_geometry(fire.df) <- NULL
 
-# Add unit column for join
-fire.df$unit <- paste0(fire.df$LATITUDE, fire.df$LONGITUDE)
+# Add unit column for join (unique identifier by coordinates)
 fveg_grid_ca$unit <- paste0(fveg_grid_ca$LATITUDE, fveg_grid_ca$LONGITUDE)
+fire.df$unit <- paste0(fire.df$LATITUDE, fire.df$LONGITUDE)
 
-# Filter FIRMS to conifer cells only
+# Filter FIRMS to conifer cells only (masking)
 fire.df <- fire.df[fire.df$unit %in% fveg_grid_ca$unit, ]
 
-# Use only conifer grid
-df <- fveg_grid_ca[,1:2]
+# Use only conifer grid for output
+df <- fveg_grid_ca[,c("LONGITUDE", "LATITUDE")]
 df$unit <- paste0(df$LATITUDE, df$LONGITUDE)
 
-# define unit by the standardized geographic coordinates
-gpw_grid_ca = readRDS(file.path(outDir, "gpw_grid_ca.RDS"))
-df <- gpw_grid_ca[,1:2]
-st_geometry(df) <- NULL
-df$unit <- paste0(df$LATITUDE, df$LONGITUDE)
-
-# for each grid, assign yearly historical fire information
-Q <- list()  
-for (j in 2000:2021) {
+# For each grid, assign yearly historical fire information
+Q <- list()
+for (j in 2000:2020) {
     p <- subset(fire.df, year == j)
     p.u <- unique(p[c("unit")])
     index <- match(p.u$unit, p$unit)
@@ -45,7 +55,7 @@ for (j in 2000:2021) {
 fire.df.new <- do.call(rbind, Q)
 
 var <- c("fire", "avg_BRIGHTNESS", "max_FRP")
-parameters <- expand.grid(2000:2021, var)
+parameters <- expand.grid(2000:2020, var)
 
 for (par in seq_len(nrow(parameters))) {
   dfn <- data.frame(matrix(0, nrow = nrow(df), ncol = 1))
@@ -53,20 +63,24 @@ for (par in seq_len(nrow(parameters))) {
   df <- cbind(df, dfn)
 }
 
-for (j in 2000:2021) {
+for (j in 2000:2020) {
   p <- subset(fire.df.new, year == j)
   index <- match(p$unit, df$unit)
   df[index, paste0("fire_", j)] <- 1
-
-      
-      for (i in seq_len(length(index))) {
-        df[index[i], paste0("avg_BRIGHTNESS_", j)] <- p$avg_BRIGHTNESS[i]
-        df[index[i], paste0("max_FRP_", j)] <- p$max_FRP[i]
-      }   
+  for (i in seq_len(length(index))) {
+    df[index[i], paste0("avg_BRIGHTNESS_", j)] <- p$avg_BRIGHTNESS[i]
+    df[index[i], paste0("max_FRP_", j)] <- p$max_FRP[i]
+  }
 }
-df <- df[,-3]
 
-write_fst(df, path = file.path(outDir, "fire_brightness_frp.fst"))
+# Remove geometry column if present (in case df is still an sf object)
+if ("geometry" %in% names(df)) {
+  df$geometry <- NULL
+}
+# Ensure df is a pure data.frame (not sf)
+df <- as.data.frame(df)
+df <- df[,!names(df) %in% c("unit")]
+
+# Save conifer-masked fire brightness and FRP data
 write_fst(df, path = file.path(outDir, "fire_brightness_frp_conifer.fst"))
-saveRDS(df, file = file.path(outDir, "fire_brightness_frp_conifer.RDS"))
 message("✓ Created conifer-only fire brightness and FRP data")

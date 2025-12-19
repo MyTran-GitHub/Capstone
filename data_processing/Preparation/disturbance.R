@@ -7,8 +7,8 @@ library(raster)
 library(fst)
 
 
-Dir = "../data/raw_data/"
-outDir = "../data/processed_data/"
+Dir = "data/raw_data/"
+outDir = "data/processed_data/"
 
 # Import the data contains the pixels of our interest in California.
 fveg_grid_ca_poly <- readRDS(file.path(outDir, "fveg_grid_ca_poly.RDS"))
