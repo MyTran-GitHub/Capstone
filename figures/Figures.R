@@ -8,28 +8,32 @@ library("data.table")
 library(Hmisc)
 library(sp)
 library("raster")
+library("parallel")
+library("tigris")
+library("EValue")
 
+outDir <- "data/processed_data/"
+resultDir <- "data/outputs/"
 
-outDir = "../data/processed_data/"
-resultDir = "../data/outputs/"
+# Create output directories
+dir.create(file.path(resultDir, "balance"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(resultDir, "maps"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(resultDir, "results"), recursive = TRUE, showWarnings = FALSE)
 
 # Figure 3 covariate balance check
 
-parameters <- expand.grid(c(2008:2020), c("conifer", "hardwood"))
+parameters <- expand.grid(c(2008:2020), c("conifer"))
 covariates <- c("minat_", "maxat_", "prcp_", "swe_", "wvp_", "fire_", "avg_BRIGHTNESS_", "max_FRP_", 
                 "fire_disturb_", "timber_", "drought_", "greening_", "browning_", "tree_cover_")
 # year_area = 1                          
-for (year_area in 1:nrow(parameters)) {
+for (year_area in seq_len(nrow(parameters))) {
   #year_area <- 1
   treated.year = as.numeric(parameters[year_area, 1])
   area = as.character(parameters[year_area, 2])
   df = readRDS(file.path(outDir, "rev_analysis_low", paste0("analysis_treated", treated.year, "_", area, ".RDS")))
   
-  weights = readRDS(list.files(file.path(outDir, "rev_res_low"),
-                               pattern = paste0(treated.year, "_", area),
-                               full.names = TRUE))
-  df_weight <- df
-  df_weight$weight <- df_weight$treated *weights$weights.1 + (1-df_weight$treated)*weights$weights.0
+  weights = readRDS(file.path(outDir, "rev_analysis_low", paste0("cbps_weights_", treated.year, "_", area, ".RDS")))
+  df_weight <- merge(df, weights[, c("unit", "weight")], by = "unit", all.x = TRUE)
   
   post_bal <- NULL
   pre_bal <- NULL
@@ -83,7 +87,7 @@ for (year_area in 1:nrow(parameters)) {
   ggtitle(paste0(treated.year, ", ", capitalize(area))) + 
     xlab("Standardized Mean Differences") +
     xlim(min(balance$SMD) - 0.01, max(balance$SMD) + 0.01)
-  ggsave(file.path(resDir, "balance", paste0("Covariate_Balance" , treated.year, "across",  area, ".jpeg")), 
+  ggsave(file.path(resultDir, "balance", paste0("Covariate_Balance" , treated.year, "across",  area, ".jpeg")), 
          balance_p, 
          width = 8.5 / 1.6,
          height = 11 / 1.6,
@@ -92,18 +96,15 @@ for (year_area in 1:nrow(parameters)) {
 
 ## Figure 3 California maps for exposed and control regions
 
-parameters <- expand.grid(c(2008:2020), c("conifer", "hardwood"))
-for (year_area in 1:nrow(parameters)) {
+parameters <- expand.grid(c(2008:2020), c("conifer"))
+for (year_area in seq_len(nrow(parameters))) {
   #year_area <- 1
   treated.year = as.numeric(parameters[year_area, 1])
   area = as.character(parameters[year_area, 2])
 
   df = readRDS(file.path(outDir, "rev_analysis_low", paste0("analysis_treated", treated.year, "_", area, ".RDS")))
-  weights = readRDS(list.files(file.path(outDir, "rev_res_low"),
-                               pattern = paste0(treated.year, "_", area),
-                               full.names = TRUE))
-  df_weight <- df
-  df_weight$weight <- df_weight$treated *weights$weights.1 + (1-df_weight$treated)*weights$weights.0
+  weights = readRDS(file.path(outDir, "rev_analysis_low", paste0("cbps_weights_", treated.year, "_", area, ".RDS")))
+  df_weight <- merge(df, weights[, c("unit", "weight")], by = "unit", all.x = TRUE)
   
   df_weight2 <- st_as_sf(df_weight[,c("LATITUDE", "LONGITUDE","weight")],
                          coords = c("LONGITUDE", "LATITUDE"),
@@ -116,7 +117,7 @@ for (year_area in 1:nrow(parameters)) {
   CA_bound = st_transform(CA_bound, crs = 4326)
   df_weight2$transparency <- (df_weight2$logwt- min(df_weight2$logwt))/(max(df_weight2$logwt)-min(df_weight2$logwt)) + 10^{-1}
   
-  jpeg(file.path(resDir, "maps", paste0("logweight_histfire", treated.year, "_", area, "..jpeg")),
+  jpeg(file.path(resultDir, "maps", paste0("logweight_histfire", treated.year, "_", area, ".jpeg")),
        width = 8.5*300, height = 11*300, quality = 100, res = 300)
   par(mar=c(0.1,1,2,1))
   if (area == "forestland") {area = "forest"}
@@ -174,23 +175,20 @@ write.csv(df, "fire_freq.csv", row.names = F)
 
 ### Table for covariate balance of indivudal covariates
 
-parameters <- expand.grid(c(2008:2020), c("conifer", "hardwood"))
+parameters <- expand.grid(c(2008:2020), c("conifer"))
 balance_summary.df <- data.frame(area = rep(NA, nrow(parameters)),
                                  year = rep(NA, nrow(parameters)),
                                  pre = rep(NA, nrow(parameters)),
                                  post = rep(NA, nrow(parameters)))
 
-for (year_area in 1:nrow(parameters)) {
+for (year_area in seq_len(nrow(parameters))) {
   
 treated.year = as.numeric(parameters[year_area, 1])
 area = as.character(parameters[year_area, 2])
 df = readRDS(file.path(outDir, "rev_analysis_low", paste0("analysis_treated", treated.year, "_", area, ".RDS")))
 
-weights = readRDS(list.files(file.path(outDir, "rev_res_low"),
-                             pattern = paste0(treated.year, "_", area),
-                             full.names = TRUE))
-df_weight <- df
-df_weight$weight <- df_weight$treated *weights$weights.1 + (1-df_weight$treated)*weights$weights.0
+weights = readRDS(file.path(outDir, "rev_analysis_low", paste0("cbps_weights_", treated.year, "_", area, ".RDS")))
+df_weight <- merge(df, weights[, c("unit", "weight")], by = "unit", all.x = TRUE)
 
 df_weight$unit <- NULL
 df_weight$LATITUDE <- NULL
@@ -225,9 +223,9 @@ write.csv(balance_summary.df, "balance_summary_frp.csv")
 res <- list()
 k = 1  
 for (outcome in c("fire_all", "fire_90", "fire_95")) {
-  for (biome in c("conifer", "hardwood")) {
+  for (biome in c("conifer")) {
     data.raw = Reduce(rbind, lapply(1:9, function(ll) {
-      XX = read.csv(file.path(outDir, "rev_result_low",
+      XX = read.csv(file.path(outDir, "rev_result_low", "2006",
                               paste0(biome, "_lag", ll, ".csv")))
       XX$lag = ll
       XX
@@ -268,7 +266,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     
     full.reg = jackfun(all.end.years)
     
-    jackreps = t(sapply(1:length(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
+    jackreps = t(sapply(seq_along(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
     colnames(jackreps) = all.lags
     
     jackvar = apply(jackreps, 2, function(xx) { var(xx) * (length(xx) - 1)^2 / length(xx) })
@@ -277,14 +275,14 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     rat = exp(full.reg)
     ub.rat = exp(full.reg + 1.96 * jackse)
     lb.rat = exp(full.reg - 1.96 * jackse)
-    results <-  data.frame(year = 1:length(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
+    results <-  data.frame(year = seq_along(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
     
     if (outcome == "fire_all") {fire_type <- "all fires"} else 
       if (outcome == "fire_90") {fire_type <- "class 2-5 fires"} else 
         if (outcome == "fire_95") {fire_type <- "class 3-5 fires"} 
     if (biome == "forestland") {biome = "forest"}
     
-    results_eval <- cbind(results[,c(1:2,5)], t(sapply(1:nrow(results), function(i) {
+    results_eval <- cbind(results[,c(1:2,5)], t(sapply(seq_len(nrow(results)), function(i) {
       evalues.RR(est = results[i,2], lo = results[i,3], hi = results[i,4])[2,]})))
     
     results_eval2 = results_eval[,c(1,6)]
@@ -315,12 +313,11 @@ res[[k]] =   ggplot(data = results_eval2, aes(x = year, y = point, color = Types
 
 }
 
-res_combined <- grid.arrange(res[[1]], res[[2]], res[[3]], res[[4]], 
-                             res[[5]], res[[6]],
+res_combined <- grid.arrange(res[[1]], res[[2]], res[[3]],
                              nrow = 3)
 
-ggsave(file.path(resDir, "results", paste0("evalue_combined_rev_linear.jpeg")), 
+ggsave(file.path(resultDir, "results", paste0("evalue_combined_rev_linear.jpeg")), 
        res_combined, 
-       width = 14 / 1.6*2,
+       width = 14 / 1.6,
        height = 8.5 / 1.6*3,
        units = "in")

@@ -81,6 +81,22 @@ if ("geometry" %in% names(df)) {
 df <- as.data.frame(df)
 df <- df[,!names(df) %in% c("unit")]
 
+# Check NA summary before saving
+firedata_cols <- setdiff(names(df), c("LONGITUDE", "LATITUDE"))
+na_summary <- sapply(df[firedata_cols], function(x) sum(is.na(x)))
+na_pct_summary <- sapply(df[firedata_cols], function(x) 100*sum(is.na(x))/length(x))
+
+cat("\nFire brightness/FRP NA summary:\n")
+na_summary_df <- data.frame(
+  Column = names(na_summary),
+  NA_Count = as.numeric(na_summary),
+  NA_Percent = round(as.numeric(na_pct_summary), 2)
+)
+print(na_summary_df[na_summary_df$NA_Count > 0, ])
+if (all(na_summary == 0)) {
+  cat("  ✓ No NA values found in fire data\n")
+}
+
 # Save conifer-masked fire brightness and FRP data
 write_fst(df, path = file.path(outDir, "fire_brightness_frp_conifer.fst"))
 message("✓ Created conifer-only fire brightness and FRP data")

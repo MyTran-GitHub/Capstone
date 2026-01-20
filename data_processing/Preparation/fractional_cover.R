@@ -62,9 +62,33 @@ tree_cover_summary <- Reduce(function(x, y) merge(x, y, by =c("LONGITUDE", "LATI
                              tree_cover_summary.list)
 cat("Merge complete.\n")
 
-cat("Replacing NA values with 0...\n")
-tree_cover_summary[] <- lapply(tree_cover_summary, function(x) replace(x, is.na(x), 0))
-cat("NA replacement complete.\n")
+# Check NA summary before imputation
+climate_cols <- setdiff(names(tree_cover_summary), c("LONGITUDE", "LATITUDE"))
+na_summary <- sapply(tree_cover_summary[climate_cols], function(x) sum(is.na(x)))
+cat("\nNA counts before imputation:\n")
+print(sort(na_summary, decreasing=TRUE)[1:10])
+
+# Impute only if NA count is small (< 1% per column)
+tree_cover_summary[climate_cols] <- lapply(
+  tree_cover_summary[climate_cols],
+  function(x) {
+    na_frac <- sum(is.na(x)) / length(x)
+    if (na_frac > 0.01) {
+      warning(sprintf("Column has %.1f%% NA - NOT imputing, keeping as NA", 100*na_frac))
+      return(x)
+    }
+    if (na_frac > 0) {
+      cat(sprintf("  Imputing %.2f%% NAs with column mean\n", 100*na_frac))
+    }
+    ifelse(is.na(x), mean(x, na.rm = TRUE), x)
+  }
+)
+
+# Final NA check
+na_summary_final <- sapply(tree_cover_summary[climate_cols], function(x) sum(is.na(x)))
+cat("\nNA counts after imputation:\n")
+print(na_summary_final[na_summary_final > 0])
+
 cat("Saving output to:", file.path(outDir, "tree_cover.fst"), "\n")
 write_fst(tree_cover_summary, path = file.path(outDir, "tree_cover.fst"))
 cat("File saved.\n")
