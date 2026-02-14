@@ -1,4 +1,4 @@
-library(fst)
+dlibrary(fst)
 library(sf)
 library(tidyverse)
 
@@ -43,7 +43,7 @@ df$unit <- paste0(df$LATITUDE, df$LONGITUDE)
 
 # For each grid, assign yearly historical fire information
 Q <- list()
-for (j in 2000:2020) {
+for (j in 2000:2021) {
     p <- subset(fire.df, year == j)
     p.u <- unique(p[c("unit")])
     index <- match(p.u$unit, p$unit)
@@ -55,7 +55,7 @@ for (j in 2000:2020) {
 fire.df.new <- do.call(rbind, Q)
 
 var <- c("fire", "avg_BRIGHTNESS", "max_FRP")
-parameters <- expand.grid(2000:2020, var)
+parameters <- expand.grid(2000:2021, var)
 
 for (par in seq_len(nrow(parameters))) {
   dfn <- data.frame(matrix(0, nrow = nrow(df), ncol = 1))
@@ -63,7 +63,7 @@ for (par in seq_len(nrow(parameters))) {
   df <- cbind(df, dfn)
 }
 
-for (j in 2000:2020) {
+for (j in 2000:2021) {
   p <- subset(fire.df.new, year == j)
   index <- match(p$unit, df$unit)
   df[index, paste0("fire_", j)] <- 1

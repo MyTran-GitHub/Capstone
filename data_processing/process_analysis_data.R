@@ -75,7 +75,7 @@ for (treated.year in parameters$year) {
   n_fire_years <- (treated.year - 2000 + 1)
   fire_vars <- c("fire", "avg_BRIGHTNESS", "max_FRP")
   fire_colnames <- c()
-  for (y in 2000:treated.year) {
+  for (y in 2000:(treated.year - 1)) {
     for (v in fire_vars) {
       fire_colnames <- c(fire_colnames, paste0(v, "_", y))
     }

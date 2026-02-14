@@ -38,8 +38,6 @@ process_variable <- function(varname) {
     LONGITUDE = fveg_grid_ca$LONGITUDE,
     LATITUDE = fveg_grid_ca$LATITUDE
   )
-  grid_points <- vect(gridclimate_mon, geom = c("LONGITUDE", "LATITUDE"), crs = "EPSG:4326")
-  
   var_df <- gridclimate_mon
 
   for (year in 2000:2020) {
