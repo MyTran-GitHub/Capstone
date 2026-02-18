@@ -2,6 +2,8 @@
 Extract 12-dimensional embeddings from a single ESD GeoTIFF year.
 Modified version for testing with a single year of data.
 Uses GeoTIFF transforms to avoid spatial misalignment.
+
+run this first pip install packaging
 """
 
 import argparse
@@ -33,12 +35,19 @@ from config import (
     validate_mgrs_tile,
     LOGS_DIR,
 )
+from esd_quantizer import Quantizer, dequantize_pixel
 
 logger = setup_logging(__name__, logging.INFO)
 
 BATCH_SIZE = 1000
-# Single year = 12 dimensions (12 bands)
-SINGLE_YEAR_EMBEDDING_DIM = 12
+# Single year embeddings:
+# - 12 months of codes → 12 months × 6 channels per month = 72 dimensions
+# - Codes are uint16 values that get dequantized to 6D vectors in [-1, 1]
+SINGLE_YEAR_EMBEDDING_DIM = 72  # 12 months × 6 channels
+ESD_CHANNELS_PER_MONTH = 6  # Dequantized vector dimensions per month
+
+# Initialize quantizer (used globally for all extractions)
+GLOBAL_QUANTIZER = Quantizer(use_torch=False)
 
 
 class ESDTileCache:
@@ -131,8 +140,15 @@ def latlon_to_rowcol(lat: float, lon: float, tile_data: Dict) -> Tuple[int, int]
     return int(row), int(col)
 
 
-def extract_pixel_embedding(tile_data: Dict, row: int, col: int) -> Tuple[bool, np.ndarray, Dict]:
-    """Extract 12-dim embedding for one year at a pixel row/col."""
+def extract_pixel_embedding(tile_data: Dict, row: int, col: int, quantizer: Quantizer) -> Tuple[bool, np.ndarray, Dict]:
+    """Extract 72-dim embedding (12 months × 6 channels) for one year at a pixel row/col.
+    
+    Process:
+    1. Extract 12 codes (uint16) from the GeoTIFF (bands 0-11)
+    2. Check QA band (band 12) for quality threshold
+    3. Dequantize codes to 6D vectors per month using the Quantizer
+    4. Return flattened 72D embedding
+    """
     data = tile_data["data"]
     report = {"row": row, "col": col}
 
@@ -155,13 +171,31 @@ def extract_pixel_embedding(tile_data: Dict, row: int, col: int) -> Tuple[bool, 
         report["error"] = "qa_below_threshold"
         return False, np.array([]), report
 
-    embedding = data[:ESD_BANDS_PER_MONTH, row, col].astype(np.float32)
-    invalid_mask = ~np.isfinite(embedding)
+    # Extract codes (uint16 quantized values) for 12 months
+    codes = data[:ESD_BANDS_PER_MONTH, row, col].astype(np.int32)
+    
+    # Check for invalid codes (NaN, negative, etc.)
+    invalid_mask = (codes < 0) | np.isnan(codes.astype(np.float32))
     if invalid_mask.any():
-        embedding[invalid_mask] = 0
-        report["invalid_values"] = int(invalid_mask.sum())
+        report["invalid_codes"] = int(invalid_mask.sum())
+        report["error"] = "invalid_codes"
+        return False, np.array([]), report
+
+    # Dequantize codes to vectors (12 months → 12 × 6 = 72D)
+    try:
+        vectors = dequantize_pixel(codes, quantizer)  # Shape: (12, 6)
+        embedding = vectors.flatten()  # Shape: (72,)
+    except Exception as exc:
+        report["error"] = f"dequantization_failed: {exc}"
+        return False, np.array([]), report
+    
+    # Verify output validity (values should be in [-1, 1] after dequantization)
+    if not np.all(np.isfinite(embedding)):
+        report["error"] = "non_finite_vectors"
+        return False, np.array([]), report
 
     report["qa_value"] = int(qa_value)
+    report["value_range"] = [float(embedding.min()), float(embedding.max())]
     return True, embedding, report
 
 
@@ -214,17 +248,28 @@ def extract_embeddings_for_pixel(
     result["pixel_row"] = row
     result["pixel_col"] = col
 
-    ok, embedding, report = extract_pixel_embedding(tile_data, row, col)
+    ok, embedding, report = extract_pixel_embedding(tile_data, row, col, GLOBAL_QUANTIZER)
     if not ok:
         result["error"] = report.get("error", "extraction failed")
         return False, result
 
-    # Store embedding values (use 'band_' prefix to match test workflow)
+    # After dequantization, values are in [-1, 1] range
+    # Apply L2-normalization for consistent similarity computation
+    embedding_norm = np.linalg.norm(embedding)
+    if embedding_norm > 1e-10:  # Avoid division by zero
+        embedding = embedding / embedding_norm
+    else:
+        # This shouldn't happen with valid dequantized vectors
+        result["error"] = "zero_vector"
+        return False, result
+    
+    # Store embedding values (72 dimensions: 12 months × 6 channels)
     for i, val in enumerate(embedding):
         result[f"band_{i}"] = float(val)
 
     result["qa_value"] = report.get("qa_value", 0)
-    result["embedding_norm"] = float(np.linalg.norm(embedding))
+    result["embedding_norm"] = float(np.linalg.norm(embedding))  # Should be ~1.0 after normalization
+    result["value_range_pre_norm"] = report.get("value_range", [0, 0])
     result["success"] = True
     return True, result
 
@@ -248,6 +293,35 @@ def extract_embeddings_for_year(
 
     total_pixels = len(data_df)
     n_batches = (total_pixels + BATCH_SIZE - 1) // BATCH_SIZE
+    
+    # Quick diagnostic: check which tiles are needed
+    if len(data_df) > 0:
+        logger.info("[INFO] Input columns: %s", list(data_df.columns[:10]))
+        logger.info("[INFO] Using lat column: '%s', lon column: '%s'", lat_col, lon_col)
+        
+        # Check first pixel in detail
+        first_row = data_df.iloc[0]
+        logger.info("[INFO] First pixel - lat: %s, lon: %s", first_row[lat_col], first_row[lon_col])
+        
+        sample_tiles = []
+        sample_errors = []
+        for idx, row in data_df.head(10).iterrows():
+            try:
+                lat_val = float(row[lat_col])
+                lon_val = float(row[lon_col])
+                tile = get_mgrs_tile_from_coords(lat_val, lon_val)
+                sample_tiles.append(tile)
+            except Exception as e:
+                sample_errors.append(str(e))
+        
+        logger.info("[INFO] Sample tiles from first 10 pixels: %s", set(sample_tiles))
+        if sample_errors:
+            logger.error("[ERROR] MGRS conversion errors: %s", sample_errors[:3])
+        
+        if sample_tiles:
+            sample_path = get_esd_filepath(sample_tiles[0], year)
+            logger.info("[INFO] Looking for tiles at: %s", sample_path.parent)
+            logger.info("[INFO] Example tile path: %s", sample_path)
 
     for batch_idx in tqdm(range(n_batches), desc=f"Processing {year}", ncols=100):
         batch_start = batch_idx * BATCH_SIZE
@@ -277,7 +351,47 @@ def extract_embeddings_for_year(
 
     results_df = pd.DataFrame(results)
 
-    logger.info("[INFO] Extracted %s embeddings", len(results_df))
+    logger.info("[INFO] Extracted %s embeddings (72D: 12 months × 6 channels)", len(results_df))
+    
+    # Check if ANY embeddings were successfully extracted
+    embedding_cols = [f"band_{i}" for i in range(SINGLE_YEAR_EMBEDDING_DIM)]
+    has_embeddings = all(col in results_df.columns for col in embedding_cols)
+    
+    if not has_embeddings:
+        logger.error("[ERROR] No embeddings extracted - all pixels failed!")
+        logger.error("[ERROR] This usually means:")
+        logger.error("[ERROR]   1. ESD tiles not found at expected location")
+        logger.error("[ERROR]   2. Coordinates outside tile bounds")
+        logger.error("[ERROR]   3. QA values below threshold")
+        
+        # Analyze failure reasons
+        if "error" in results_df.columns:
+            logger.error("[ERROR] Failure breakdown:")
+            error_counts = results_df["error"].value_counts()
+            for error_type, count in error_counts.items():
+                pct = 100 * count / len(results_df)
+                logger.error("[ERROR]   %s: %d pixels (%.1f%%)", error_type, count, pct)
+        
+        return False, results_df
+    
+    # Check for NaN values in embedding bands (failed extractions)
+    nan_mask = results_df[embedding_cols].isna().any(axis=1)
+    nan_count = nan_mask.sum()
+    
+    if nan_count > 0:
+        logger.warning("[WARN] Found %s pixels with NaN embeddings (failed extraction)", nan_count)
+        logger.info("[INFO] Breaking down failed pixels by error type:")
+        
+        failed_df = results_df[nan_mask]
+        if "error" in failed_df.columns:
+            error_counts = failed_df["error"].value_counts()
+            for error_type, count in error_counts.items():
+                logger.info("[INFO]   %s: %d pixels", error_type, count)
+        
+        logger.info("[INFO] FILTERING OUT failed pixels (keeping only valid embeddings)")
+        results_df = results_df[~nan_mask].reset_index(drop=True)
+        logger.info("[INFO] After filtering: %s pixels remain", len(results_df))
+    
     if not results_df.empty and "tile_in_ca" in results_df.columns:
         outside_mask = results_df["tile_in_ca"] == False
         outside_count = int(outside_mask.sum())
@@ -298,6 +412,61 @@ def extract_embeddings_for_year(
         ensure_dir(output_csv.parent)
         results_df.to_csv(output_csv, index=False)
         logger.info("[INFO] Saved embeddings to: %s", output_csv)
+    
+    # Validate extracted embeddings
+    if not results_df.empty:
+        embedding_cols = [f"band_{i}" for i in range(SINGLE_YEAR_EMBEDDING_DIM)]
+        
+        # Check for any remaining NaN (should be none after filtering)
+        all_present = results_df[embedding_cols].notna().all().all()
+        if all_present:
+            logger.info("[INFO] ✓ All embedding columns populated (no NaN)")
+        else:
+            remaining_nan = results_df[embedding_cols].isna().sum().sum()
+            logger.error("[ERROR] ⚠ %d NaN values still present after filtering!", remaining_nan)
+        
+        # Embedding norm statistics
+        embedding_matrix = results_df[embedding_cols].values
+        norms = np.linalg.norm(embedding_matrix, axis=1)
+        
+        # Check for zero vectors (all bands ≈ 0) - indicate failed extraction
+        zero_rows = norms < 1e-10
+        zero_count = zero_rows.sum()
+        if zero_count > 0:
+            zero_pct = 100 * zero_count / len(results_df)
+            logger.warning("[WARN] ⚠ %d pixels (%.2f%%) are zero vectors (norm≈0)", zero_count, zero_pct)
+            logger.warning("[WARN]    These are likely failed extractions that were filled with 0 in earlier processing")
+        else:
+            logger.info("[INFO] ✓ No zero vectors")
+        
+        logger.info("[INFO] Embedding norm statistics (n=%d, 72D vectors):", len(results_df))
+        logger.info("[INFO]   Min: %.6f", np.min(norms))
+        logger.info("[INFO]   Max: %.6f", np.max(norms))
+        logger.info("[INFO]   Mean: %.6f (should be near 1.0 if L2-normalized)", np.mean(norms))
+        logger.info("[INFO]   Median: %.6f", np.median(norms))
+        
+        # Check if embeddings are normalized
+        mean_norm = np.mean(norms)
+        if 0.99 < mean_norm < 1.01:
+            logger.info("[INFO] ✓ Embeddings appear L2-normalized (mean norm ≈ 1.0)")
+        else:
+            logger.warning("[WARN] ⚠ Embeddings may not be normalized (mean norm = %.4f)", mean_norm)
+        
+        # Check pre-normalization value ranges (should be in [-1, 1] after dequantization)
+        if 'value_range_pre_norm' in results_df.columns:
+            try:
+                ranges = results_df['value_range_pre_norm'].apply(lambda x: eval(x) if isinstance(x, str) else x)
+                min_vals = ranges.apply(lambda r: r[0] if isinstance(r, list) and len(r) > 0 else np.nan)
+                max_vals = ranges.apply(lambda r: r[1] if isinstance(r, list) and len(r) > 1 else np.nan)
+                
+                logger.info("[INFO] Pre-normalization value range (after dequantization):")
+                logger.info("[INFO]   Overall min: %.6f (expected ≈ -1.0)", min_vals.min())
+                logger.info("[INFO]   Overall max: %.6f (expected ≈ +1.0)", max_vals.max())
+                
+                if min_vals.min() < -1.1 or max_vals.max() > 1.1:
+                    logger.warning("[WARN] ⚠ Dequantized values outside expected [-1, 1] range!")
+            except Exception as e:
+                logger.debug("[DEBUG] Could not parse value ranges: %s", e)
 
     return True, results_df
 
@@ -310,7 +479,7 @@ def resolve_input_csv(year: int, input_csv: Optional[Path]) -> Path:
     # Try standard paths (RDS exported to CSV)
     candidates = [
         Path("data/processed_data/rev_analysis_low") / f"analysis_treated{year}_conifer.csv",
-        Path("../data/processed_data/rev_analysis_low") / f"analysis_treated{year}_conifer.csv",
+        Path("./data/processed_data/rev_analysis_low") / f"analysis_treated{year}_conifer.csv",
         Path(__file__).parent.parent / "data" / "processed_data" / "rev_analysis_low" / f"analysis_treated{year}_conifer.csv",
     ]
     for path in candidates:
@@ -354,7 +523,7 @@ def main() -> int:
         data_df = pd.read_csv(input_path)
         logger.info("[INFO] Loaded %s pixels", len(data_df))
 
-        output_csv = args.output_csv or Path(f"embeddings_{args.year}.csv")
+        output_csv = args.output_csv or Path(f"embeddings/embeddings_{args.year}.csv")
         success, results_df = extract_embeddings_for_year(data_df, args.year, output_csv)
 
         if success:

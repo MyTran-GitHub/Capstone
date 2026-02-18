@@ -9,10 +9,11 @@ multi-stage filtering approach:
 
 STAGE 1: Elbow Analysis (Similarity-Based Filtering)
   - Compute mean cosine similarity for each K candidate
-  - Identify "elbow" where marginal similarity gains plateau (<2% improvement)
-  - Drop K beyond elbow (diminishing returns, computational waste)
-  - Example: K=[10,20,30,50,75,100], sim=[0.85,0.90,0.92,0.93,0.93,0.93]
-    → Elbow at K=50 (Δsim=0.01) → Keep K=[10,20,30,50]
+  - Identify "elbow" where similarity drops sharply (>2% decrease)
+  - Drop K after elbow (poor quality controls, sharp degradation)
+  - Example: K=[10,20,30,50,75,100], sim=[0.92,0.915,0.911,0.906,0.903,0.90]
+    → Δsim=[-0.005,-0.004,-0.005,-0.003,-0.003] (gradual)
+    → No sharp drop → Keep all K values
 
 STAGE 2: Pool Size Check (Statistical Power Filtering)  
   - For each K, compute union of K-nearest controls across all treated pixels
@@ -72,40 +73,82 @@ import logging
 import subprocess
 import tempfile
 from typing import Dict, List, Tuple, Set
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s - %(name)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def cosine_similarity(x: np.ndarray, y: np.ndarray) -> float:
-    """Compute cosine similarity between two vectors"""
-    return np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y))
-
-
 def compute_all_similarities(embeddings_df: pd.DataFrame) -> Dict[int, np.ndarray]:
     """
-    Compute similarity from each treated pixel to all control pixels
+    Compute similarity from each treated pixel to all control pixels (VECTORIZED)
     Returns:
         Dictionary: treated_idx -> array of (control_idx, similarity) sorted by similarity descending
     """
-    logger.info("Computing similarities for all treated-control pairs...")
-    treated_indices = embeddings_df[embeddings_df['treated'] == 1].index.tolist()
-    control_indices = embeddings_df[embeddings_df['treated'] == 0].index.tolist()
+    logger.info("Computing similarities for all treated-control pairs (vectorized)...")
+    
+    # Import sklearn for vectorized cosine similarity
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
+    except ImportError:
+        logger.error("sklearn (scikit-learn) is required for vectorized similarity computation")
+        logger.error("Install with: pip install scikit-learn")
+        raise ImportError("sklearn not found. Install with: pip install scikit-learn")
+    
+    # Get masks and indices
+    treated_mask = embeddings_df['treated'] == 1
+    control_mask = embeddings_df['treated'] == 0
+    treated_indices = embeddings_df[treated_mask].index.tolist()
+    control_indices = embeddings_df[control_mask].index.tolist()
+    
+    # Extract embedding columns
     embedding_cols = [col for col in embeddings_df.columns if col.startswith('band_')]
-    embeddings_matrix = embeddings_df[embedding_cols].values
+    
+    # Extract treated and control embeddings
+    treated_embeddings = embeddings_df.loc[treated_mask, embedding_cols].values  # (n_treated, n_dims)
+    control_embeddings = embeddings_df.loc[control_mask, embedding_cols].values  # (n_control, n_dims)
+    
+    # DEBUG: Check for inf/nan in matrices
+    nan_in_treated = np.isnan(treated_embeddings).sum()
+    inf_in_treated = np.isinf(treated_embeddings).sum()
+    nan_in_control = np.isnan(control_embeddings).sum()
+    inf_in_control = np.isinf(control_embeddings).sum()
+    
+    if nan_in_treated > 0 or inf_in_treated > 0:
+        logger.warning(f"  Treated embeddings contain {nan_in_treated} NaN and {inf_in_treated} inf!")
+    if nan_in_control > 0 or inf_in_control > 0:
+        logger.warning(f"  Control embeddings contain {nan_in_control} NaN and {inf_in_control} inf!")
+    
+    # VECTORIZED: Compute all similarities at once
+    # Output shape: (n_treated, n_control)
+    logger.info(f"  Computing {len(treated_indices)} × {len(control_indices)} = {len(treated_indices) * len(control_indices):,} similarities...")
+    similarity_matrix = sklearn_cosine_similarity(treated_embeddings, control_embeddings)
+    
+    # Verify matrix dimensions match expectations
+    expected_shape = (len(treated_indices), len(control_indices))
+    if similarity_matrix.shape != expected_shape:
+        raise ValueError(f"Similarity matrix shape {similarity_matrix.shape} doesn't match expected {expected_shape}")
+    
+    # Check for NaN in results
+    nan_count = np.isnan(similarity_matrix).sum()
+    if nan_count > 0:
+        logger.warning(f"  {nan_count} NaN similarities detected, replacing with 0")
+        similarity_matrix = np.nan_to_num(similarity_matrix, nan=0.0)
+    
+    # Convert to same output format as original function
+    # Dictionary: treated_idx -> array of (control_idx, similarity) sorted descending
     similarities = {}
-    for t_idx in treated_indices:
-        treated_emb = embeddings_matrix[t_idx]
-        sims = []
-        for c_idx in control_indices:
-            control_emb = embeddings_matrix[c_idx]
-            sim = cosine_similarity(treated_emb, control_emb)
-            sims.append((c_idx, sim))
+    for i, t_idx in enumerate(treated_indices):
+        # Get similarities for this treated pixel (row i)
+        sims = [(control_indices[j], similarity_matrix[i, j]) 
+                for j in range(len(control_indices))]
         # Sort by similarity descending
         sims.sort(key=lambda x: x[1], reverse=True)
         similarities[t_idx] = np.array(sims)
-    logger.info(f"Computed similarities for {len(treated_indices)} treated pixels")
+    
+    logger.info(f"  ✓ Computed similarities for {len(treated_indices)} treated pixels (vectorized)")
     return similarities
 
 
@@ -154,38 +197,41 @@ def compute_elbow_metrics(similarities: Dict[int, np.ndarray],
 def filter_by_elbow(elbow_df: pd.DataFrame, 
                     drop_threshold: float = 0.02) -> List[int]:
     """
-    Filter K candidates by elbow method - drop K where similarity gains plateau
+    Filter K candidates by elbow method - drop K where similarity drops sharply
     
     Args:
         elbow_df: DataFrame from compute_elbow_metrics with K, mean_similarity
-        drop_threshold: Drop K if similarity gain < this threshold (default 0.02)
+        drop_threshold: Trigger elbow if similarity drops by more than this (default 0.02)
     
     Returns:
-        List of K values before the elbow (where marginal gains drop below threshold)
+        List of K values before the elbow (where similarity drop is gradual)
     
     Logic:
-        - Compute marginal similarity gain: Δsim = sim[K+1] - sim[K]
-        - If Δsim < threshold, stop - no point increasing K further
-        - Example: K=[10,20,30,50], sim=[0.85,0.90,0.92,0.93]
-          → Δsim=[0.05,0.02,0.01] → Stop at K=30 (Δsim=0.01 < 0.02)
+        - As K increases, mean similarity DECREASES (adding less similar controls)
+        - Compute marginal change: Δsim = sim[K+1] - sim[K] (will be negative)
+        - If Δsim < -threshold (sharp drop), trigger elbow BEFORE this K
+        - Example: K=[10,20,30,50], sim=[0.92,0.915,0.911,0.85]
+          → Δsim=[-0.005,-0.004,-0.061] → Elbow at K=50 (Δsim=-0.061 < -0.02)
+          → Keep K=[10,20,30] (gradual decrease), drop K=50+ (sharp drop)
     """
     logger.info(f"\nStep 1b: Filtering by elbow (drop threshold: {drop_threshold})...")
     elbow_df = elbow_df.sort_values('K')
     similarities = elbow_df['mean_similarity'].values
     K_values = elbow_df['K'].values
-    # Compute marginal gains (difference between consecutive K)
-    marginal_gains = np.diff(similarities)
-    # Find first K where marginal gain drops below threshold
+    # Compute marginal changes (similarity decreases as K increases)
+    marginal_gains = np.diff(similarities)  # Will be negative (similarity decreases)
+    # Find first K where similarity drops sharply (magnitude > threshold)
     elbow_idx = None
     for i, gain in enumerate(marginal_gains):
         logger.info(f"  K={K_values[i]} → K={K_values[i+1]}: Δsim={gain:.4f}")
-        if gain < drop_threshold:
-            elbow_idx = i + 1  # Keep up to this K
-            logger.info(f"  ✂ Elbow detected at K={K_values[i+1]} (Δsim < {drop_threshold})")
+        # Check if drop is LARGE (more negative than -threshold)
+        if gain < -drop_threshold:
+            elbow_idx = i + 1  # Stop BEFORE the sharp drop
+            logger.info(f"  ✂ Elbow detected at K={K_values[i+1]} (Δsim < -{drop_threshold})")
             break
-    # If no elbow found, keep all K (similarity never plateaus)
+    # If no elbow found, keep all K (no sharp drop detected)
     if elbow_idx is None:
-        logger.info(f"  ℹ No elbow detected - keeping all K candidates")
+        logger.info(f"  ℹ No sharp drop detected - keeping all K candidates")
         filtered_K = K_values.tolist()
     else:
         filtered_K = K_values[:elbow_idx].tolist()
@@ -283,14 +329,15 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
     """
     
     # Get unit IDs for selected controls
-    selected_units = embeddings_df.iloc[list(selected_controls)]['unit'].tolist()
+    # Note: selected_controls contains DataFrame indices (which are 0-based after reset_index)
+    selected_units = embeddings_df.loc[list(selected_controls), 'unit'].tolist()
     # Create temporary CSV with selected units
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
         temp_csv = f.name
         pd.DataFrame({'unit': selected_units}).to_csv(temp_csv, index=False)
     try:
         # Call R script
-        r_script = "run_cbps_with_selected_controls.R"
+        r_script = "Embeddings/run_cbps_with_selected_controls.R"
         cmd = [
             "Rscript",
             r_script,
@@ -307,12 +354,13 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
             cmd,
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent.parent.parent  # Run from Capstone/ root
+            cwd=Path(__file__).parent.parent  # Run from Capstone/ root (Embeddings/../)
         )
         if result.returncode != 0:
             logger.error(f"R script failed with return code {result.returncode}")
+            logger.error(f"STDOUT: {result.stdout}")
             logger.error(f"STDERR: {result.stderr}")
-            raise RuntimeError(f"R CBPS script failed: {result.stderr}")
+            raise RuntimeError(f"R CBPS script failed: {result.stderr or result.stdout}")
         # Parse R output
         from config import CBPS_INTEGRATION_DIR
         # Look in year-specific subdirectory
@@ -339,11 +387,68 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
         Path(temp_csv).unlink(missing_ok=True)
 
 
+def compute_k_value(K: int, similarities: Dict[int, np.ndarray], 
+                    embeddings_df: pd.DataFrame, year: int,
+                    train_years: List[int], test_years: List[int]) -> Dict:
+    """
+    Worker function to compute CBPS metrics for a specific K value
+    Designed for parallel execution via ThreadPoolExecutor
+    
+    Args:
+        K: Number of nearest neighbors
+        similarities: Pre-computed similarity matrix
+        embeddings_df: DataFrame with embeddings and treatment labels
+        year: Treatment year
+        train_years: Training period years
+        test_years: Test period years
+    
+    Returns:
+        Dictionary with results and success status
+    """
+    try:
+        # Get K-nearest controls
+        selected_controls = get_k_nearest_union(similarities, K)
+        output_prefix = f"k{K}"
+        
+        # Run CBPS cross-validation
+        result = run_cbps_crossval(
+            embeddings_df,
+            selected_controls,
+            year=year,
+            output_prefix=output_prefix,
+            train_years=train_years,
+            test_years=test_years
+        )
+        
+        # Return success result
+        return {
+            'K': K,
+            'pool_size': len(selected_controls),
+            'rmse': result['rmse'],
+            'rmse_train': result['rmse_train'],
+            'max_balance_std': result['max_balance_std'],
+            'mean_balance_std': result['mean_balance_std'],
+            'convergence': result['convergence'],
+            'n_controls_used': result['n_controls_used'],
+            'success': True,
+            'error': None
+        }
+    except Exception as e:
+        # Return failure result with error message
+        return {
+            'K': K,
+            'success': False,
+            'error': str(e)
+        }
+
+
 def select_optimal_k(similarities: Dict[int, np.ndarray],
                     embeddings_df: pd.DataFrame,
                     K_candidates: List[int],
                     year: int,
-                    min_ratio: int = 10) -> Dict:
+                    min_ratio: int = 10,
+                    force_recompute: bool = False,
+                    max_workers: int = 6) -> Dict:
     """
     Complete K selection pipeline
     Args:
@@ -352,6 +457,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         K_candidates: List of K values to test
         year: Treatment year (e.g., 2019)
         min_ratio: Minimum control pool size as multiple of treated count
+        force_recompute: Force recomputation of CBPS (ignore cache)
+        max_workers: Maximum number of parallel workers (default: 6)
     Returns:
         Dictionary with optimal K and all diagnostics
     """
@@ -364,6 +471,7 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     logger.info(f"Control pool: {n_controls}")
     logger.info(f"K candidates: {K_candidates}")
     logger.info(f"Min control ratio: {min_ratio}× treated")
+    logger.info(f"Parallelization: {max_workers} workers")
     # Step 1: Elbow analysis (compute similarity for each K)
     elbow_df = compute_elbow_metrics(similarities, K_candidates)
     # Step 1b: Filter by elbow (drop K beyond similarity plateau)
@@ -379,42 +487,137 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         logger.error(f"Try smaller min_ratio (current: {min_ratio}) or larger K values")
         return None
     logger.info(f"\nValid K values for RMSPE testing: {valid_K}")
-    # Step 3: RMSPE cross-validation
+    
+    # Step 3a: Determine which K values need computation (respect cache)
     logger.info(f"\nStep 3: Running CBPS + RMSPE cross-validation...")
-    rmse_results = []
+    from config import CBPS_INTEGRATION_DIR
+    
+    K_to_compute = []
+    K_cached = []
+    
     for K in valid_K:
-        selected_controls = get_k_nearest_union(similarities, K)
-        output_prefix = f"k{K}"  
-        logger.info(f"  Testing K={K} ({len(selected_controls)} controls)...")    
-        try:
-            result = run_cbps_crossval(
-                embeddings_df,
-                selected_controls,
-                year=year,
-                output_prefix=output_prefix,
-                train_years=list(range(2000, 2011)),
-                test_years=list(range(2011, 2016))
-            )
-            rmse_results.append({
-                'K': K,
-                'pool_size': len(selected_controls),
-                'rmse': result['rmse'],
-                'rmse_train': result['rmse_train'],
-                'max_balance_std': result['max_balance_std'],
-                'mean_balance_std': result['mean_balance_std'],
-                'convergence': result['convergence'],
-                'n_controls_used': result['n_controls_used']
-            })           
-            logger.info(f"    ✓ RMSE={result['rmse']:.4f}, "
-                       f"balance={result['max_balance_std']:.3f}, "
-                       f"converged={result['convergence'] == 1}")        
-        except Exception as e:
-            logger.error(f"    ✗ Failed for K={K}: {e}")
-            continue    
+        output_prefix = f"k{K}"
+        metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+        
+        if metrics_file.exists() and not force_recompute:
+            K_cached.append(K)
+        else:
+            K_to_compute.append(K)
+    
+    # Log cache status
+    if not force_recompute:
+        logger.info(f"  Cache status: {len(K_cached)} cached, {len(K_to_compute)} need computation")
+        if K_cached:
+            logger.info(f"  Will load cached: {K_cached}")
+        if K_to_compute:
+            logger.info(f"  Will compute: {K_to_compute}")
+    else:
+        logger.info(f"  --force-recompute: Computing all {len(K_to_compute)} K values")
+    
+    # Step 3b: Load cached results
+    rmse_results = []
+    
+    if K_cached:
+        logger.info(f"\n  Loading cached results...")
+        for K in K_cached:
+            output_prefix = f"k{K}"
+            metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+            try:
+                metrics = pd.read_csv(metrics_file)
+                selected_controls = get_k_nearest_union(similarities, K)
+                rmse_results.append({
+                    'K': K,
+                    'pool_size': len(selected_controls),
+                    'rmse': float(metrics['rmse_test'].iloc[0]),
+                    'rmse_train': float(metrics['rmse_train'].iloc[0]),
+                    'max_balance_std': float(metrics['max_balance_std'].iloc[0]),
+                    'mean_balance_std': float(metrics['mean_balance_std'].iloc[0]),
+                    'convergence': int(metrics['converged'].iloc[0]),
+                    'n_controls_used': int(metrics['n_control'].iloc[0])
+                })
+                logger.info(f"    K={K}: ✓ Loaded (RMSE={rmse_results[-1]['rmse']:.4f})")
+            except Exception as e:
+                logger.warning(f"    K={K}: ⚠ Failed to load cache: {e}")
+                logger.warning(f"             Adding back to computation queue...")
+                K_to_compute.append(K)  # Re-add to computation list
+    
+    # Step 3c: Parallelize computation of remaining K values
+    if K_to_compute:
+        logger.info(f"\n  Computing CBPS for {len(K_to_compute)} K values in parallel...")
+        
+        # Determine number of parallel workers (limit to avoid overwhelming system)
+        n_workers = min(len(K_to_compute), max_workers)  # Don't spawn more workers than K values
+        logger.info(f"  Using {n_workers} parallel workers")
+        
+        # Create partial function with common arguments bound
+        compute_func = partial(
+            compute_k_value,
+            similarities=similarities,
+            embeddings_df=embeddings_df,
+            year=year,
+            train_years=list(range(2000, 2011)),
+            test_years=list(range(2011, 2016))
+        )
+        
+        # Execute in parallel using ThreadPoolExecutor
+        # (Threads work well here since bottleneck is I/O-bound R subprocess calls)
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            # Submit all K values for computation
+            future_to_k = {executor.submit(compute_func, K): K for K in K_to_compute}
+            
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_k):
+                K = future_to_k[future]
+                completed += 1
+                
+                try:
+                    result = future.result()
+                    
+                    if result['success']:
+                        # Extract metrics (exclude success/error flags)
+                        metrics = {k: v for k, v in result.items() 
+                                  if k not in ['success', 'error']}
+                        rmse_results.append(metrics)
+                        logger.info(f"    K={K}: ✓ RMSE={result['rmse']:.4f}, "
+                                   f"balance={result['max_balance_std']:.3f} "
+                                   f"[{completed}/{len(K_to_compute)}]")
+                    else:
+                        logger.error(f"    K={K}: ✗ Failed: {result['error']} "
+                                    f"[{completed}/{len(K_to_compute)}]")
+                except Exception as e:
+                    logger.error(f"    K={K}: ✗ Exception: {e} "
+                                f"[{completed}/{len(K_to_compute)}]")
+        
+        logger.info(f"  ✓ Parallel computation complete")
+    
+    # Step 3d: Check if we have any results
     if not rmse_results:
-        logger.error("All K values failed CBPS cross-validation!")
+        logger.error("\n" + "="*80)
+        logger.error("ERROR: All K values failed CBPS cross-validation!")
+        logger.error("="*80)
+        logger.error("Possible causes:")
+        logger.error("  1. R script not found or not executable")
+        logger.error("  2. Missing R dependencies (CBPS, dplyr, tidyr)")
+        logger.error("  3. Data quality issues in analysis_treated{year}_conifer.RDS")
+        logger.error("  4. FIRMS.RDS missing or corrupted")
+        logger.error("\nCheck R script output above for details.")
         return None    
-    rmse_df = pd.DataFrame(rmse_results)    
+    
+    rmse_df = pd.DataFrame(rmse_results)
+    
+    # Summary of what succeeded/failed
+    logger.info(f"\n{'='*80}")
+    logger.info(f"CBPS CROSS-VALIDATION SUMMARY")
+    logger.info(f"{'='*80}")
+    logger.info(f"Tested: {len(valid_K)} K values")
+    logger.info(f"Succeeded: {len(rmse_results)} K values")
+    logger.info(f"Failed: {len(valid_K) - len(rmse_results)} K values")
+    if len(rmse_results) < len(valid_K):
+        failed_K = set(valid_K) - set(rmse_df['K'].values)
+        logger.warning(f"  Failed K values: {sorted(failed_K)}")
+        logger.warning(f"  (Check logs above for error details)")
+    logger.info("")    
     # Step 4: Select optimal K
     optimal_idx = rmse_df['rmse'].idxmin()
     optimal_K = rmse_df.loc[optimal_idx, 'K']
@@ -473,37 +676,102 @@ Examples:
         type=int,
         default=10,
         help='Minimum control:treated ratio (default: 10)'
+    )
+    parser.add_argument(
+        '--force-recompute',
+        action='store_true',
+        help='Force recomputation of similarities and CBPS (ignore cache)'
+    )
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=6,
+        help='Maximum number of parallel workers for CBPS computation (default: 6)'
     )    
     args = parser.parse_args()
     year = args.year    
     logger.info(f"Processing year: {year}")    
     # Load embeddings with treatment labels
-    # For production, use embeddings/ output directory
-    embeddings_file = Path(f"embeddings/embeddings_{year}.csv")    
-    # Fallback to test data if production data not found
-    if not embeddings_file.exists():
-        embeddings_file = Path(f"tests/data/11SLA_embeddings_{year}_with_treatment.csv")    
+    # For production, use Embeddings/embeddings/ output directory
+    embeddings_file = Path(f"Embeddings/embeddings/embeddings_{year}.csv")    
+    # Fallback to test data if production data not found   
     if not embeddings_file.exists():
         logger.error(f"Embeddings file not found for year {year}: {embeddings_file}")
         logger.error(f"Expected locations:")
-        logger.error(f"  - embeddings/embeddings_{year}.csv")
+        logger.error(f"  - Embeddings/embeddings/embeddings_{year}.csv")
         logger.error(f"  - tests/data/11SLA_embeddings_{year}_with_treatment.csv")
         return 1    
     logger.info(f"Loading embeddings from {embeddings_file}...")
     embeddings_df = pd.read_csv(embeddings_file)    
-    # Validate required columns
-    required_cols = ['unit', 'treated'] + [f'band_{i}' for i in range(12)]
+    # Validate required columns (72D embeddings after quantization: 12 months × 6 channels)
+    required_cols = ['unit', 'treated'] + [f'band_{i}' for i in range(72)]
     missing_cols = [col for col in required_cols if col not in embeddings_df.columns]
     if missing_cols:
         logger.error(f"Embeddings file missing required columns: {missing_cols}")
         logger.error(f"Available columns: {list(embeddings_df.columns)}")
         return 1    
     logger.info(f"✓ Embeddings validated: {len(required_cols)} required columns present")
+    
+    # Verify all 72 dimensions are present (12 months × 6 channels after quantization)
+    embedding_cols = [col for col in embeddings_df.columns if col.startswith('band_')]
+    if len(embedding_cols) != 72:
+        logger.warning(f"Expected 72 embedding dimensions (quantized), found {len(embedding_cols)}")
+        logger.warning(f"Embedding columns: {embedding_cols[:12]}... (showing first 12)")
+    else:
+        logger.info(f"✓ All 72 embedding dimensions present (12 months × 6 channels)")
+    
     logger.info(f"Loaded {len(embeddings_df)} pixels")
     logger.info(f"  Treated: {(embeddings_df['treated'] == 1).sum()}")
-    logger.info(f"  Control: {(embeddings_df['treated'] == 0).sum()}")   
-    # Step 1: Compute all similarities (one-time computation)
-    similarities = compute_all_similarities(embeddings_df)    
+    logger.info(f"  Control: {(embeddings_df['treated'] == 0).sum()}")
+    
+    # CRITICAL: Filter out rows with NaN in embeddings
+    nan_rows = embeddings_df[embedding_cols].isna().any(axis=1).sum()
+    
+    if nan_rows > 0:
+        logger.warning(f"⚠ Found {nan_rows} rows ({100*nan_rows/len(embeddings_df):.1f}%) with NaN embeddings")
+        logger.warning(f"  Filtering out rows with any NaN in embeddings...")
+        embeddings_df = embeddings_df[~embeddings_df[embedding_cols].isna().any(axis=1)].reset_index(drop=True)
+        logger.info(f"  After filtering: {len(embeddings_df)} pixels remain")
+        logger.info(f"    Treated: {(embeddings_df['treated'] == 1).sum()}")
+        logger.info(f"    Control: {(embeddings_df['treated'] == 0).sum()}")
+        
+        if len(embeddings_df) == 0:
+            logger.error("ERROR: All embeddings have NaN values - cannot proceed!")
+            return 1
+    else:
+        logger.info(f"  ✓ No NaN values in embeddings")
+    
+    # CRITICAL: Always reset index to ensure sequential 0-based indexing
+    # This ensures DataFrame indices match positional indices
+    embeddings_df = embeddings_df.reset_index(drop=True)
+    logger.info(f"  ✓ Reset index to ensure sequential indexing")
+    
+    # Step 1: Compute all similarities (one-time computation with caching)
+    from config import K_SELECTION_DIR
+    similarities_cache = K_SELECTION_DIR / str(year) / f"similarities_cache_{year}.npy"
+    similarities_cache.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Delete cache if force recompute requested
+    if args.force_recompute and similarities_cache.exists():
+        logger.info(f"🗑️  Deleting cached similarities (--force-recompute)")
+        similarities_cache.unlink()
+    
+    if similarities_cache.exists():
+        logger.info(f"Loading cached similarities from {similarities_cache}...")
+        similarities_array = np.load(similarities_cache, allow_pickle=True).item()
+        # Convert back to proper format
+        similarities = {}
+        for k, v in similarities_array.items():
+            similarities[int(k)] = v
+        logger.info(f"  ✓ Loaded {len(similarities)} treated pixels from cache")
+    else:
+        logger.info("Computing similarities (will be cached for future runs)...")
+        similarities = compute_all_similarities(embeddings_df)
+        
+        # Save to cache for future runs
+        np.save(similarities_cache, similarities)
+        logger.info(f"  ✓ Cached similarities to {similarities_cache}")
+        logger.info(f"     (Delete this file to force recomputation)")    
     # Step 2-4: Select optimal K
     # K range justification:
     #   - Lower bound (10): Minimum for statistical stability (K-NN standard)
@@ -516,24 +784,236 @@ Examples:
     min_ratio = args.min_ratio    
     logger.info(f"K candidates: {K_candidates}")
     logger.info(f"Min control ratio: {min_ratio}× treated (CBPS stability requirement)")
+    
     results = select_optimal_k(
         similarities,
         embeddings_df,
         K_candidates,
         year=year,
-        min_ratio=min_ratio
+        min_ratio=min_ratio,
+        force_recompute=args.force_recompute,
+        max_workers=args.max_workers
     )    
     if results is None:
         return 1   
     # Save results
-    from config import K_SELECTION_DIR
+    from config import K_SELECTION_DIR, CBPS_INTEGRATION_DIR
     output_dir = K_SELECTION_DIR / str(year)
     output_dir.mkdir(parents=True, exist_ok=True)    
     results['elbow_metrics'].to_csv(output_dir / "k_selection_elbow.csv", index=False)
     results['rmse_results'].to_csv(output_dir / "k_selection_rmse.csv", index=False)    
     logger.info(f"\nResults saved to {output_dir}/")
     logger.info(f"  - k_selection_elbow.csv (similarity by K)")
-    logger.info(f"  - k_selection_rmse.csv (RMSPE by K)")    
+    logger.info(f"  - k_selection_rmse.csv (RMSPE by K)")
+    
+    # ============================================================
+    # PHASE 1 MECHANISM ANALYSIS: Save for future investigations
+    # ============================================================
+    logger.info("\n" + "="*80)
+    logger.info("MECHANISM ANALYSIS (saving for Phase 1 future work)")
+    logger.info("="*80)
+    
+    optimal_K = results['optimal_K']
+    similarities = results['all_similarities']
+    
+    # 1. Get selected control indices for optimal K
+    logger.info(f"\nExtracting selected controls for K={optimal_K}...")
+    selected_controls = get_k_nearest_union(similarities, optimal_K)
+    logger.info(f"  ✓ {len(selected_controls)} unique controls selected")
+    
+    # 2. Extract embeddings for clustering analysis
+    treated_mask = embeddings_df['treated'] == 1
+    control_mask = embeddings_df['treated'] == 0
+    
+    embedding_cols = [c for c in embeddings_df.columns if c.startswith('band_')]
+    
+    # Get control DataFrame indices
+    control_df_indices = embeddings_df[control_mask].index.tolist()
+    
+    # Create mapping from DataFrame index to numpy array position
+    df_idx_to_pos = {df_idx: pos for pos, df_idx in enumerate(control_df_indices)}
+    
+    # Extract control embeddings as numpy array
+    control_embeddings = embeddings_df.loc[control_mask, embedding_cols].values
+    
+    # Map selected_controls (DataFrame indices) to numpy array positions
+    selected_positions = [df_idx_to_pos[idx] for idx in selected_controls if idx in df_idx_to_pos]
+    selected_control_embeddings = control_embeddings[selected_positions]
+    
+    # 3. Compute silhouette score (clustering quality metric)
+    logger.info("\nComputing clustering quality metrics...")
+    try:
+        from sklearn.metrics import silhouette_score, adjusted_rand_score
+        from sklearn.cluster import KMeans
+        
+        # Try K-means with k=5 clusters (arbitrary but reasonable)
+        if len(selected_control_embeddings) >= 10:  # Need sufficient samples
+            n_clusters = min(5, len(selected_control_embeddings)//2)
+            
+            # Compute silhouette score
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+            cluster_labels = kmeans.fit_predict(selected_control_embeddings)
+            silhouette = silhouette_score(selected_control_embeddings, cluster_labels)
+            logger.info(f"  Silhouette score: {silhouette:.3f}")
+            
+            # Test K-means stability across 5 random seeds
+            logger.info(f"  Testing K-means stability (5 random seeds)...")
+            stability_scores = []
+            base_labels = cluster_labels
+            for seed in [123, 456, 789, 101112, 131415]:
+                kmeans_test = KMeans(n_clusters=n_clusters, random_state=seed)
+                test_labels = kmeans_test.fit_predict(selected_control_embeddings)
+                ari = adjusted_rand_score(base_labels, test_labels)
+                stability_scores.append(ari)
+            
+            mean_stability = np.mean(stability_scores)
+            logger.info(f"  K-means stability (mean ARI): {mean_stability:.3f}")
+            
+            if silhouette > 0.5:
+                logger.info("    → STRONG clustering structure (embeddings capture meaningful groups)")
+            elif silhouette > 0.25:
+                logger.info("    → MODERATE clustering structure")
+            else:
+                logger.info("    → WEAK clustering structure (controls are dispersed)")
+            
+            if mean_stability > 0.8:
+                logger.info("    → HIGH stability (consistent clustering across seeds)")
+            elif mean_stability > 0.5:
+                logger.info("    → MODERATE stability")
+            else:
+                logger.info("    → LOW stability (clustering is inconsistent)")
+        else:
+            silhouette = np.nan
+            mean_stability = np.nan
+            logger.info("  ⚠ Too few controls for clustering analysis")
+    except ImportError:
+        silhouette = np.nan
+        mean_stability = np.nan
+        logger.warning("  ⚠ sklearn not available - skipping clustering analysis")
+    
+    # 4. Save similarity scores for selected controls (for correlation analysis)
+    logger.info("\nSaving similarity distribution for selected controls...")
+    
+    # Create a control_idx -> similarities mapping for efficient lookup
+    # Build reverse index: control_idx -> list of (treated_idx, similarity)
+    control_to_sims = {}
+    for t_idx, t_sims in similarities.items():
+        # t_sims is array of (control_idx, similarity) tuples
+        for c_idx, sim in t_sims:
+            c_idx_int = int(c_idx)
+            if c_idx_int not in control_to_sims:
+                control_to_sims[c_idx_int] = []
+            control_to_sims[c_idx_int].append(sim)
+    
+    # For each selected control, compute average similarity to all treated pixels
+    control_similarities = []
+    for control_idx in selected_controls:
+        # Get all similarities for this control
+        sims_to_this_control = control_to_sims.get(control_idx, [])
+        
+        # Compute statistics
+        if sims_to_this_control:
+            avg_sim = np.mean(sims_to_this_control)
+            max_sim = np.max(sims_to_this_control)
+            min_sim = np.min(sims_to_this_control)
+        else:
+            avg_sim = max_sim = min_sim = 0.0
+        
+        # Map control_idx (DataFrame index) to unit ID
+        # Since control_mask is boolean, we need to get the unit value properly
+        try:
+            control_unit = embeddings_df.loc[control_idx, 'unit']
+        except KeyError:
+            logger.warning(f"Control index {control_idx} not found in DataFrame, skipping")
+            continue
+        
+        control_similarities.append({
+            'control_idx': control_idx,
+            'control_unit': control_unit,
+            'avg_similarity': avg_sim,
+            'max_similarity': max_sim,
+            'min_similarity': min_sim
+        })
+    
+    similarity_df = pd.DataFrame(control_similarities)
+    similarity_file = output_dir / f"control_similarities_k{optimal_K}_{year}.csv"
+    similarity_df.to_csv(similarity_file, index=False)
+    logger.info(f"  ✓ Saved to: {similarity_file}")
+    
+    # 5. Try to compute correlation with CBPS weights (if weights file exists)
+    weights_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_weights_full_k{optimal_K}_{year}.csv"
+    
+    if weights_file.exists():
+        logger.info("\nComputing correlation between similarity and CBPS weights...")
+        weights_df = pd.read_csv(weights_file)
+        control_weights = weights_df[weights_df['treated'] == 0][['unit', 'weight']]
+        
+        # Merge similarities with weights
+        mechanism_df = similarity_df.merge(control_weights, left_on='control_unit', right_on='unit', how='inner')
+        
+        if len(mechanism_df) > 0:
+            correlation = mechanism_df['avg_similarity'].corr(mechanism_df['weight'])
+            logger.info(f"  Correlation(similarity, weight) = {correlation:.3f}")
+            
+            if correlation > 0.5:
+                logger.info("    → HIGH correlation: ClusterSC mechanism likely operating!")
+                logger.info("       CBPS weights concentrate on high-similarity controls")
+            elif correlation > 0.2:
+                logger.info("    → MODERATE correlation: Partial ClusterSC effect")
+            else:
+                logger.info("    → LOW correlation: Random filtering or non-linear weighting")
+            
+            # Save mechanism analysis
+            mechanism_file = output_dir / f"mechanism_analysis_k{optimal_K}_{year}.csv"
+            mechanism_df.to_csv(mechanism_file, index=False)
+            logger.info(f"\n  ✓ Saved mechanism analysis to: {mechanism_file}")
+            
+            # Save summary statistics
+            summary = pd.DataFrame([{
+                'year': year,
+                'optimal_K': optimal_K,
+                'n_controls_selected': len(selected_controls),
+                'silhouette_score': silhouette,
+                'kmeans_stability': mean_stability,
+                'similarity_weight_corr': correlation,
+                'mean_similarity': similarity_df['avg_similarity'].mean(),
+                'std_similarity': similarity_df['avg_similarity'].std(),
+                'mean_weight': control_weights['weight'].mean(),
+                'std_weight': control_weights['weight'].std(),
+                'weight_concentration': (control_weights['weight'] > control_weights['weight'].median()).sum() / len(control_weights)
+            }])
+            
+            summary_file = output_dir / f"mechanism_summary_{year}.csv"
+            summary.to_csv(summary_file, index=False)
+            logger.info(f"  ✓ Saved summary to: {summary_file}")
+        else:
+            logger.warning("  ⚠ Could not merge similarities with weights")
+    else:
+        logger.info(f"\n  Note: Weights file not yet created: {weights_file}")
+        logger.info(f"        Correlation analysis will be available after CBPS completes")
+        logger.info(f"        Similarity scores saved for later correlation computation")
+        
+        # Still save clustering metrics even without weights
+        summary = pd.DataFrame([{
+            'year': year,
+            'optimal_K': optimal_K,
+            'n_controls_selected': len(selected_controls),
+            'silhouette_score': silhouette,
+            'kmeans_stability': mean_stability,
+            'similarity_weight_corr': np.nan,
+            'mean_similarity': similarity_df['avg_similarity'].mean(),
+            'std_similarity': similarity_df['avg_similarity'].std(),
+            'mean_weight': np.nan,
+            'std_weight': np.nan,
+            'weight_concentration': np.nan
+        }])
+        
+        summary_file = output_dir / f"mechanism_summary_{year}.csv"
+        summary.to_csv(summary_file, index=False)
+        logger.info(f"\n  ✓ Saved clustering metrics to: {summary_file}")
+        logger.info(f"     (Will be updated with correlation after CBPS completes)")
+    
+    logger.info("\n" + "="*80)    
     logger.info("\n" + "="*80)
     logger.info("NEXT STEPS:")
     logger.info("="*80)

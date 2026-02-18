@@ -1,246 +1,348 @@
 """
 Compare Embedding-Based Control Selection vs Baseline (Full Pool CBPS)
 
-Tests two approaches:
-1. Baseline: Full control pool + CBPS (full information)
-2. Embedding K-nearest: Reduced pool + CBPS (our method)
+EFFICIENT VERSION: Reads pre-computed results instead of re-running CBPS
 
 Compares:
 - Pre-treatment RMSE (lower = better pre-treatment fit)
 - Covariate balance (standardized mean difference)
 - Pool size reduction
-- Computational time
+- Computational efficiency
+
+Data Sources:
+1. Baseline: Results from implement_cbps.R + weighted_outcome_analysis.R (already run)
+2. Embedding: Results from select_optimal_k.py (already computed for all K values)
+
+This script just reads, compares, and visualizes - no expensive re-computation!
 """
 
 import sys
 from pathlib import Path
-
+import argparse
 
 import numpy as np
 import pandas as pd
 import logging
 import subprocess
-import tempfile
-import time
-from typing import Dict
+from typing import Dict, Optional
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def run_cbps_r(year: int, 
-               selected_units: list,
-               output_prefix: str,
-               train_years: list,
-               test_years: list) -> Dict:
+def load_baseline_metrics(year: int, 
+                           train_start: int, 
+                           train_end: int, 
+                           test_start: int, 
+                           test_end: int) -> Optional[Dict]:
     """
-    Call R CBPS script with selected control units
+    Load or compute baseline metrics from existing outputs
+    
+    First tries to load pre-computed metrics, otherwise computes from
+    existing weighted_outcome_analysis.R outputs
     
     Returns:
-        Dictionary with RMSE, balance metrics, timing
+        Dictionary with baseline metrics or None if failed
     """
+    from config import CBPS_INTEGRATION_DIR
     
-    # Create temporary CSV with selected units
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-        temp_csv = f.name
-        pd.DataFrame({'unit': selected_units}).to_csv(temp_csv, index=False)
+    # Try to load pre-computed metrics
+    metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"baseline_metrics_{year}.csv"
+    
+    if metrics_file.exists():
+        logger.info(f"  Loading pre-computed baseline metrics from {metrics_file}")
+        metrics = pd.read_csv(metrics_file)
+        return {
+            'method': 'baseline_full_pool',
+            'rmse_train': float(metrics['rmse_train'].iloc[0]),
+            'rmse_test': float(metrics['rmse_test'].iloc[0]),
+            'n_treated': int(metrics['n_treated'].iloc[0]) if not pd.isna(metrics['n_treated'].iloc[0]) else None,
+            'n_control': int(metrics['n_control'].iloc[0]) if not pd.isna(metrics['n_control'].iloc[0]) else None,
+        }
+    
+    # Otherwise compute from existing outputs
+    logger.info(f"  Computing baseline RMSE from existing weighted_outcome_analysis.R outputs...")
+    
+    r_script = "Embeddings/compute_baseline_rmse_from_existing.R"
+    cmd = [
+        "Rscript",
+        r_script,
+        str(year),
+        str(train_start),
+        str(train_end),
+        str(test_start),
+        str(test_end)
+    ]
     
     try:
-        start_time = time.time()
-        
-        # Call R script
-        r_script = "run_cbps_with_selected_controls.R"
-        cmd = [
-            "Rscript",
-            r_script,
-            str(year),
-            temp_csv,
-            output_prefix,
-            str(train_years[0]),
-            str(train_years[-1]),
-            str(test_years[0]),
-            str(test_years[-1])
-        ]
-        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent.parent.parent
+            cwd=Path(__file__).parent.parent
         )
         
-        elapsed_time = time.time() - start_time
-        
         if result.returncode != 0:
-            logger.error(f"R script failed: {result.stderr}")
-            raise RuntimeError(f"R CBPS failed: {result.stderr}")
+            logger.error(f"  Baseline RMSE computation failed: {result.stderr}")
+            return None
         
-        # Parse results
-        from config import CBPS_INTEGRATION_DIR
-        # Look in year-specific subdirectory
-        metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
-        
-        if not metrics_file.exists():
-            raise FileNotFoundError(f"Metrics file not created: {metrics_file}")
-        
-        metrics = pd.read_csv(metrics_file)
-        
-        return {
-            'rmse': float(metrics['rmse_test'].iloc[0]),
-            'rmse_train': float(metrics['rmse_train'].iloc[0]),
-            'max_balance_std': float(metrics['max_balance_std'].iloc[0]),
-            'mean_balance_std': float(metrics['mean_balance_std'].iloc[0]),
-            'n_treated': int(metrics['n_treated'].iloc[0]),
-            'n_control': int(metrics['n_control'].iloc[0]),
-            'converged': bool(metrics['converged'].iloc[0]),
-            'elapsed_time': elapsed_time
-        }
-        
-    finally:
-        Path(temp_csv).unlink(missing_ok=True)
+        # Load the newly created metrics file
+        if metrics_file.exists():
+            metrics = pd.read_csv(metrics_file)
+            return {
+                'method': 'baseline_full_pool',
+                'rmse_train': float(metrics['rmse_train'].iloc[0]),
+                'rmse_test': float(metrics['rmse_test'].iloc[0]),
+                'n_treated': int(metrics['n_treated'].iloc[0]) if not pd.isna(metrics['n_treated'].iloc[0]) else None,
+                'n_control': int(metrics['n_control'].iloc[0]) if not pd.isna(metrics['n_control'].iloc[0]) else None,
+            }
+        else:
+            logger.error(f"  Metrics file not created: {metrics_file}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"  Failed to compute baseline metrics: {e}")
+        return None
 
 
-def get_k_nearest_controls(embeddings_df: pd.DataFrame, K: int) -> list:
+def load_embedding_metrics(year: int, K: int) -> Optional[Dict]:
     """
-    Select K nearest controls for each treated pixel using cosine similarity
-    Returns list of unique control unit IDs
+    Load embedding method metrics (already computed by select_optimal_k.py)
+    
+    Returns:
+        Dictionary with embedding metrics or None if not found
     """
-    from select_optimal_k import compute_all_similarities, get_k_nearest_union
+    from config import CBPS_INTEGRATION_DIR
     
-    logger.info(f"Computing K={K} nearest neighbors...")
+    metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_k{K}_{year}.csv"
     
-    similarities = compute_all_similarities(embeddings_df)
-    selected_indices = get_k_nearest_union(similarities, K)
-    selected_units = embeddings_df.iloc[list(selected_indices)]['unit'].tolist()
+    if not metrics_file.exists():
+        logger.error(f"  Embedding metrics not found: {metrics_file}")
+        logger.error(f"  Run select_optimal_k.py first to generate these metrics")
+        return None
     
-    logger.info(f"  Selected {len(selected_units)} unique control pixels")
+    logger.info(f"  Loading embedding metrics from {metrics_file}")
+    metrics = pd.read_csv(metrics_file)
     
-    return selected_units
+    return {
+        'method': f'embedding_k{K}',
+        'K': K,
+        'rmse_train': float(metrics['rmse_train'].iloc[0]),
+        'rmse_test': float(metrics['rmse_test'].iloc[0]),
+        'max_balance_std': float(metrics['max_balance_std'].iloc[0]),
+        'mean_balance_std': float(metrics['mean_balance_std'].iloc[0]),
+        'n_treated': int(metrics['n_treated'].iloc[0]),
+        'n_control': int(metrics['n_control'].iloc[0]),
+        'n_covariates': int(metrics['n_covariates'].iloc[0]),
+        'rho': float(metrics['rho'].iloc[0]),
+        'converged': bool(metrics['converged'].iloc[0])
+    }
+
+
+def find_optimal_k(year: int) -> Optional[int]:
+    """
+    Find optimal K from select_optimal_k.py results
+    
+    Returns:
+        Optimal K value or None if not found
+    """
+    from config import K_SELECTION_DIR
+    
+    rmse_file = K_SELECTION_DIR / str(year) / "k_selection_rmse.csv"
+    
+    if not rmse_file.exists():
+        logger.error(f"  K selection results not found: {rmse_file}")
+        logger.error(f"  Run select_optimal_k.py first")
+        return None
+    
+    rmse_df = pd.read_csv(rmse_file)
+    optimal_idx = rmse_df['rmse'].idxmin()
+    optimal_K = int(rmse_df.loc[optimal_idx, 'K'])
+    
+    logger.info(f"  Optimal K from selection: {optimal_K}")
+    logger.info(f"  (RMSE = {rmse_df.loc[optimal_idx, 'rmse']:.4f})")
+    
+    return optimal_K
+
+
+def load_all_k_metrics(year: int) -> pd.DataFrame:
+    """
+    Load metrics for all K values tested
+    
+    Returns:
+        DataFrame with metrics for each K
+    """
+    from config import K_SELECTION_DIR
+    
+    rmse_file = K_SELECTION_DIR / str(year) / "k_selection_rmse.csv"
+    
+    if not rmse_file.exists():
+        logger.warning(f"  K selection results not found: {rmse_file}")
+        return pd.DataFrame()
+    
+    return pd.read_csv(rmse_file)
 
 
 def main():
-    """Run comparison: baseline vs embedding"""
+    """
+    EFFICIENT comparison workflow:
+    1. Find optimal K from select_optimal_k.py results
+    2. Load embedding metrics from select_optimal_k.py outputs
+    3. Load baseline metrics from existing analysis
+    4. Compare and visualize results
     
-    # Configuration
-    year = 2019
-    K = 30  # Can be changed based on optimal K selection results
-    embeddings_file = Path("embeddings/embeddings_2019.csv")
+    This script just READS and COMPARES - no expensive re-computation!
+    """
     
-    # Fallback to test data if production data not found
-    if not embeddings_file.exists():
-        embeddings_file = Path("tests/data/11SLA_embeddings_2019_with_treatment.csv")
-    
-    # Cross-validation split
-    train_years = list(range(2000, 2011))
-    test_years = list(range(2011, 2016))
+    parser = argparse.ArgumentParser(description='Compare embedding vs baseline CBPS')
+    parser.add_argument('--year', type=int, default=2019, help='Treatment year')
+    parser.add_argument('--K', type=int, default=None, help='Specific K to compare (default: use optimal from selection)')
+    parser.add_argument('--train-start', type=int, default=2000)
+    parser.add_argument('--train-end', type=int, default=2010)
+    parser.add_argument('--test-start', type=int, default=2011)
+    parser.add_argument('--test-end', type=int, default=2015)
+    parser.add_argument('--show-all-k', action='store_true', help='Show results for all K values tested')
+    args = parser.parse_args()
     
     logger.info("="*80)
-    logger.info(f"COMPARISON: EMBEDDING-BASED vs BASELINE (Year {year})")
+    logger.info("EMBEDDINGS VS BASELINE COMPARISON")
     logger.info("="*80)
-    logger.info(f"K = {K}")
-    logger.info(f"Train: {train_years[0]}-{train_years[-1]}")
-    logger.info(f"Test: {test_years[0]}-{test_years[-1]}")
+    logger.info(f"Year: {args.year}")
+    logger.info(f"Train period: {args.train_start}-{args.train_end}")
+    logger.info(f"Test period: {args.test_start}-{args.test_end}")
     logger.info("")
     
-    # Load embeddings
-    if not embeddings_file.exists():
-        logger.error(f"Embeddings file not found: {embeddings_file}")
+    # 1. Find optimal K or use specified K
+    if args.K is None:
+        logger.info("Finding optimal K from select_optimal_k.py results...")
+        optimal_K = find_optimal_k(args.year)
+        if optimal_K is None:
+            logger.error("Failed to find optimal K. Run select_optimal_k.py first!")
+            return 1
+    else:
+        optimal_K = args.K
+        logger.info(f"Using specified K={optimal_K}")
+    
+    logger.info("")
+    
+    # 2. Load baseline metrics
+    logger.pinfo("="*80)
+    logger.info("LOADING BASELINE METRICS")
+    logger.info("="*80)
+    
+    baseline_metrics = load_baseline_metrics(
+        year=args.year,
+        train_start=args.train_start,
+        train_end=args.train_end,
+        test_start=args.test_start,
+        test_end=args.test_end
+    )
+    
+    if baseline_metrics is None:
+        logger.error("Failed to load baseline metrics!")
+        logger.error("Make sure you've run implement_cbps.R and weighted_outcome_analysis.R")
         return 1
     
-    embeddings_df = pd.read_csv(embeddings_file)
-    n_treated = (embeddings_df['treated'] == 1).sum()
-    n_total_controls = (embeddings_df['treated'] == 0).sum()
-    
-    logger.info(f"Data loaded: {len(embeddings_df)} pixels")
-    logger.info(f"  Treated: {n_treated}")
-    logger.info(f"  Total controls: {n_total_controls}")
+    logger.info(f"✓ Baseline loaded successfully")
+    logger.info(f"  RMSE (train): {baseline_metrics['rmse_train']:.4f}")
+    logger.info(f"  RMSE (test): {baseline_metrics['rmse_test']:.4f}")
+    if baseline_metrics['n_control']:
+        logger.info(f"  N control: {baseline_metrics['n_control']:,}")
     logger.info("")
     
-    results = []
-    
-    # 1. BASELINE: Full control pool + CBPS
+    # 3. Load embedding metrics
     logger.info("="*80)
-    logger.info("1. BASELINE (Full Pool + CBPS)")
+    logger.info(f"LOADING EMBEDDING METRICS (K={optimal_K})")
     logger.info("="*80)
     
-    try:
-        all_controls = embeddings_df[embeddings_df['treated'] == 0]['unit'].tolist()
-        baseline_result = run_cbps_r(year, all_controls, "baseline", train_years, test_years)
-        
-        results.append({
-            'method': 'baseline_full_pool',
-            'K': n_total_controls,
-            'n_controls_selected': len(all_controls),
-            'pool_reduction_pct': 0.0,
-            **baseline_result
-        })
-        
-        logger.info(f"✓ Baseline completed")
-        logger.info(f"  RMSE (test): {baseline_result['rmse']:.4f}")
-        logger.info(f"  Balance (max): {baseline_result['max_balance_std']:.3f}")
-        logger.info(f"  Time: {baseline_result['elapsed_time']:.1f}s")
-        
-    except Exception as e:
-        logger.error(f"✗ Baseline failed: {e}")
+    embedding_metrics = load_embedding_metrics(args.year, optimal_K)
     
+    if embedding_metrics is None:
+        logger.error(f"Failed to load embedding metrics for K={optimal_K}!")
+        logger.error("Run select_optimal_k.py first to generate these results")
+        return 1
+    
+    logger.info(f"✓ Embedding metrics loaded successfully")
+    logger.info(f"  RMSE (train): {embedding_metrics['rmse_train']:.4f}")
+    logger.info(f"  RMSE (test): {embedding_metrics['rmse_test']:.4f}")
+    logger.info(f"  Max balance std: {embedding_metrics['max_balance_std']:.4f}")
+    logger.info(f"  Mean balance std: {embedding_metrics['mean_balance_std']:.4f}")
+    logger.info(f"  N control: {embedding_metrics['n_control']:,}")
+    logger.info(f"  Converged: {embedding_metrics['converged']}")
     logger.info("")
     
-    # 2. EMBEDDING K-NEAREST: Reduced pool + CBPS
+    # 4. Compare results
     logger.info("="*80)
-    logger.info(f"2. EMBEDDING K-NEAREST (K={K})")
+    logger.info("COMPARISON SUMMARY")
     logger.info("="*80)
     
-    try:
-        embedding_controls = get_k_nearest_controls(embeddings_df, K)
-        embedding_result = run_cbps_r(year, embedding_controls, f"embedding_k{K}", train_years, test_years)
-        
-        pool_reduction = 100 * (1 - len(embedding_controls) / n_total_controls)
-        
-        results.append({
-            'method': f'embedding_k{K}',
-            'K': K,
-            'n_controls_selected': len(embedding_controls),
-            'pool_reduction_pct': pool_reduction,
-            **embedding_result
-        })
-        
-        logger.info(f"✓ Embedding K={K} completed")
-        logger.info(f"  RMSE (test): {embedding_result['rmse']:.4f}")
-        logger.info(f"  Balance (max): {embedding_result['max_balance_std']:.3f}")
-        logger.info(f"  Pool reduction: {pool_reduction:.1f}%")
-        logger.info(f"  Time: {embedding_result['elapsed_time']:.1f}s")
-        
-    except Exception as e:
-        logger.error(f"✗ Embedding method failed: {e}")
+    comparison = pd.DataFrame({
+        'Method': ['Baseline (all controls)', f'Embedding (K={optimal_K})'],
+        'N_Control': [
+            baseline_metrics['n_control'] if baseline_metrics['n_control'] else 'N/A',
+            embedding_metrics['n_control']
+        ],
+        'RMSE_Train': [baseline_metrics['rmse_train'], embedding_metrics['rmse_train']],
+        'RMSE_Test': [baseline_metrics['rmse_test'], embedding_metrics['rmse_test']],
+        'Max_Balance': ['N/A', f"{embedding_metrics['max_balance_std']:.4f}"],
+        'Mean_Balance': ['N/A', f"{embedding_metrics['mean_balance_std']:.4f}"]
+    })
+    
+    print("\n" + comparison.to_string(index=False))
+    
+    # Calculate improvements
+    rmse_train_improvement = 100 * (baseline_metrics['rmse_train'] - embedding_metrics['rmse_train']) / baseline_metrics['rmse_train']
+    rmse_test_improvement = 100 * (baseline_metrics['rmse_test'] - embedding_metrics['rmse_test']) / baseline_metrics['rmse_test']
+    
+    logger.info("")
+    logger.info(f"RMSE Train Improvement: {rmse_train_improvement:+.2f}%")
+    logger.info(f"RMSE Test Improvement: {rmse_test_improvement:+.2f}%")
+    
+    if baseline_metrics['n_control']:
+        pool_reduction = 100 * (baseline_metrics['n_control'] - embedding_metrics['n_control']) / baseline_metrics['n_control']
+        logger.info(f"Control Pool Reduction: {pool_reduction:.1f}%")
     
     logger.info("")
     
-    # Save comparison results
-    if results:
-        results_df = pd.DataFrame(results)
-        from config import CBPS_INTEGRATION_DIR
-        # Save comparison summary in year-specific directory
-        year_dir = CBPS_INTEGRATION_DIR / str(year)
-        year_dir.mkdir(parents=True, exist_ok=True)
-        output_file = year_dir / f"comparison_results_{year}.csv"
-        results_df.to_csv(output_file, index=False)
-        
-        logger.info("")
+    # 5. Show all K results if requested
+    if args.show_all_k:
         logger.info("="*80)
-        logger.info("COMPARISON SUMMARY")
+        logger.info("ALL K VALUES TESTED")
         logger.info("="*80)
-        logger.info(f"\n{results_df.to_string(index=False)}\n")
         
-        # Compute improvements
-        if len(results) >= 2:
-            baseline_rmse = results_df[results_df['method'] == 'baseline_full_pool']['rmse'].iloc[0]
-            
-            for _, row in results_df[results_df['method'] != 'baseline_full_pool'].iterrows():
-                improvement = 100 * (baseline_rmse - row['rmse']) / baseline_rmse
-                logger.info(f"{row['method']}: {improvement:+.1f}% RMSE vs baseline")
-        
-        logger.info(f"\nResults saved to: {output_file}")
+        all_k_df = load_all_k_metrics(args.year)
+        if not all_k_df.empty:
+            print("\n" + all_k_df.to_string(index=False))
+            logger.info("")
+    
+    # 6. Save comparison results
+    from config import CBPS_INTEGRATION_DIR
+    output_dir = CBPS_INTEGRATION_DIR / str(args.year)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"comparison_results_{args.year}.csv"
+    
+    # Create detailed comparison with improvements
+    detailed_comparison = pd.DataFrame({
+        'year': [args.year, args.year],
+        'method': ['baseline', f'embedding_k{optimal_K}'],
+        'n_treated': [baseline_metrics.get('n_treated', 'N/A'), embedding_metrics['n_treated']],
+        'n_control': [baseline_metrics.get('n_control', 'N/A'), embedding_metrics['n_control']],
+        'rmse_train': [baseline_metrics['rmse_train'], embedding_metrics['rmse_train']],
+        'rmse_test': [baseline_metrics['rmse_test'], embedding_metrics['rmse_test']],
+        'rmse_train_improvement_pct': ['', f"{rmse_train_improvement:+.2f}"],
+        'rmse_test_improvement_pct': ['', f"{rmse_test_improvement:+.2f}"],
+        'max_balance_std': ['N/A', embedding_metrics['max_balance_std']],
+        'mean_balance_std': ['N/A', embedding_metrics['mean_balance_std']],
+    })
+    
+    detailed_comparison.to_csv(output_file, index=False)
+    logger.info(f"✓ Saved comparison to: {output_file}")
+    
+    logger.info("")
+    logger.info("="*80)
+    logger.info("DONE - Comparison complete!")
+    logger.info("="*80)
     
     return 0
 
