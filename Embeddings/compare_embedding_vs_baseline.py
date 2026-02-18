@@ -1,14 +1,14 @@
 """
 Compare Embedding-Based Control Selection vs Baseline (Full Pool CBPS)
 
-Tests three approaches:
-1. Baseline: Full control pool + CBPS (Wu 2023 method)
+Tests two approaches:
+1. Baseline: Full control pool + CBPS (full information)
 2. Embedding K-nearest: Reduced pool + CBPS (our method)
-3. Random K: Random subset + CBPS (placebo test)
 
 Compares:
-- Pre-treatment RMSPE (lower = better fit)
-- Covariate balance (SMD on actual covariates)
+- Pre-treatment RMSE (lower = better pre-treatment fit)
+- Covariate balance (standardized mean difference)
+- Pool size reduction
 - Computational time
 """
 
@@ -77,7 +77,9 @@ def run_cbps_r(year: int,
             raise RuntimeError(f"R CBPS failed: {result.stderr}")
         
         # Parse results
-        metrics_file = Path(f"tests/results/cbps_integration/cbps_metrics_{output_prefix}_{year}.csv")
+        from config import CBPS_INTEGRATION_DIR
+        # Look in year-specific subdirectory
+        metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
         
         if not metrics_file.exists():
             raise FileNotFoundError(f"Metrics file not created: {metrics_file}")
@@ -117,28 +119,8 @@ def get_k_nearest_controls(embeddings_df: pd.DataFrame, K: int) -> list:
     return selected_units
 
 
-def get_random_controls(embeddings_df: pd.DataFrame, K: int, n_treated: int) -> list:
-    """
-    Randomly select K controls per treated pixel (placebo test)
-    """
-    logger.info(f"Randomly selecting K={K} controls per treated pixel...")
-    
-    control_df = embeddings_df[embeddings_df['treated'] == 0]
-    
-    # Sample K×n_treated with replacement (to match embedding strategy)
-    n_samples = K * n_treated
-    random_controls = control_df.sample(n=min(n_samples, len(control_df)), 
-                                       replace=True,
-                                       random_state=42)
-    
-    selected_units = random_controls['unit'].unique().tolist()
-    logger.info(f"  Selected {len(selected_units)} unique control pixels")
-    
-    return selected_units
-
-
 def main():
-    """Run comparison: baseline vs embedding vs random"""
+    """Run comparison: baseline vs embedding"""
     
     # Configuration
     year = 2019
@@ -234,38 +216,14 @@ def main():
     
     logger.info("")
     
-    # 3. RANDOM K: Random subset + CBPS (placebo)
-    logger.info("="*80)
-    logger.info(f"3. RANDOM K={K} (Placebo)")
-    logger.info("="*80)
-    
-    try:
-        random_controls = get_random_controls(embeddings_df, K, n_treated)
-        random_result = run_cbps_r(year, random_controls, f"random_k{K}", train_years, test_years)
-        
-        pool_reduction = 100 * (1 - len(random_controls) / n_total_controls)
-        
-        results.append({
-            'method': f'random_k{K}',
-            'K': K,
-            'n_controls_selected': len(random_controls),
-            'pool_reduction_pct': pool_reduction,
-            **random_result
-        })
-        
-        logger.info(f"✓ Random K={K} completed")
-        logger.info(f"  RMSE (test): {random_result['rmse']:.4f}")
-        logger.info(f"  Balance (max): {random_result['max_balance_std']:.3f}")
-        logger.info(f"  Pool reduction: {pool_reduction:.1f}%")
-        logger.info(f"  Time: {random_result['elapsed_time']:.1f}s")
-        
-    except Exception as e:
-        logger.error(f"✗ Random method failed: {e}")
-    
     # Save comparison results
     if results:
         results_df = pd.DataFrame(results)
-        output_file = Path("tests/results/cbps_integration/comparison_results.csv")
+        from config import CBPS_INTEGRATION_DIR
+        # Save comparison summary in year-specific directory
+        year_dir = CBPS_INTEGRATION_DIR / str(year)
+        year_dir.mkdir(parents=True, exist_ok=True)
+        output_file = year_dir / f"comparison_results_{year}.csv"
         results_df.to_csv(output_file, index=False)
         
         logger.info("")

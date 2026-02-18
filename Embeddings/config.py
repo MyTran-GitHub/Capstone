@@ -13,7 +13,7 @@ import pyproj
 # LOGGING CONFIGURATION
 # ============================================================================
 
-def setup_logging(name: str, level: logging.INFO) -> logging.Logger:
+def setup_logging(name: str, level: int = logging.INFO) -> logging.Logger:
     """
     Configure logging with INFO/WARN/ERROR markers.
 
@@ -67,15 +67,16 @@ QA_BAND_INDEX = 12  # Band 13 (0-indexed)
 
 # California MGRS tiles covering Capstone study area
 CA_MGRS_TILES = [
-    "10SDJ", "10SDK", "10SDL", "10SDM", "10SDN",
-    "11SPE", "11SPD", "11SPC", "11SPB", "11SPA",
+    "10SDJ", "10SEG", "10SEH", "10SEJ", "10SFE", "10SFF", "10SFJ", "10SGH", "10SGJ", "10TCK", "10TCM", "10TDK", "10TDL", "10TDM", "10TEK", "10TEL", "10TEM", "10TFK", "10TFL", "10TFM", "10TGL", "10TGM",
+    "11SKB", "11SKU", "11SLA", "11SLB", "11SLU", "11SLV", "11SMT", "11SNT",
 ]
 
 # UTM zone for California (varies by longitude, but mostly Zone 11)
 UTM_ZONE_PRIMARY = 11
 UTM_ZONES = {
-    "10SDJ": 10, "10SDK": 10, "10SDL": 10, "10SDM": 10, "10SDN": 10,
-    "11SPE": 11, "11SPD": 11, "11SPC": 11, "11SPB": 11, "11SPA": 11,
+    "10SDJ": 10, "10SEG": 10, "10SEH": 10, "10SEJ": 10, "10SFE": 10, "10SFF": 10, "10SFJ": 10, "10SGH": 10, "10SGJ": 10,
+    "10TCK": 10, "10TCM": 10, "10TDK": 10, "10TDL": 10, "10TDM": 10, "10TEK": 10, "10TEL": 10, "10TEM": 10, "10TFK": 10, "10TFL": 10, "10TFM": 10, "10TGL": 10, "10TGM": 10,
+    "11SKB": 11, "11SKU": 11, "11SLA": 11, "11SLB": 11, "11SLU": 11, "11SLV": 11, "11SMT": 11, "11SNT": 11,
 }
 
 # Pixel size and MGRS tile size
@@ -99,14 +100,25 @@ ESD_TILES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_EMBEDDINGS_DIR = BASE_DIR / "embeddings"
 OUTPUT_EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-MATCHES_DIR = BASE_DIR / "matches"
-MATCHES_DIR.mkdir(parents=True, exist_ok=True)
+# Unused directories - commented out to avoid creating empty folders
+# MATCHES_DIR = BASE_DIR / "matches"
+# MATCHES_DIR.mkdir(parents=True, exist_ok=True)
 
-ENRICHED_DIR = BASE_DIR / "enriched_matches"
-ENRICHED_DIR.mkdir(parents=True, exist_ok=True)
+# ENRICHED_DIR = BASE_DIR / "enriched_matches"
+# ENRICHED_DIR.mkdir(parents=True, exist_ok=True)
 
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Results directories (for K selection and CBPS integration)
+RESULTS_DIR = BASE_DIR / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+K_SELECTION_DIR = RESULTS_DIR / "k_selection"
+K_SELECTION_DIR.mkdir(parents=True, exist_ok=True)
+
+CBPS_INTEGRATION_DIR = RESULTS_DIR / "cbps_integration"
+CBPS_INTEGRATION_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================================
 # FILE PATH FUNCTIONS
@@ -159,19 +171,20 @@ def get_embeddings_output_path(year: int) -> Path:
     return OUTPUT_EMBEDDINGS_DIR / f"embeddings_{year}.csv"
 
 
-def get_matches_output_path(year: int) -> Path:
-    """Get output path for matched pairs CSV for focal year."""
-    return MATCHES_DIR / f"matched_pairs_{year}.csv"
+# Unused functions - commented out (matching/enrichment pipeline not implemented)
+# def get_matches_output_path(year: int) -> Path:
+#     """Get output path for matched pairs CSV for focal year."""
+#     return MATCHES_DIR / f"matched_pairs_{year}.csv"
 
 
-def get_matches_stats_path(year: int) -> Path:
-    """Get output path for matching statistics JSON for focal year."""
-    return MATCHES_DIR / f"matching_stats_{year}.json"
+# def get_matches_stats_path(year: int) -> Path:
+#     """Get output path for matching statistics JSON for focal year."""
+#     return MATCHES_DIR / f"matching_stats_{year}.json"
 
 
-def get_enriched_output_path(year: int) -> Path:
-    """Get output path for enriched matched pairs CSV for focal year."""
-    return ENRICHED_DIR / f"enriched_matched_pairs_{year}.csv"
+# def get_enriched_output_path(year: int) -> Path:
+#     """Get output path for enriched matched pairs CSV for focal year."""
+#     return ENRICHED_DIR / f"enriched_matched_pairs_{year}.csv"
 
 
 # ============================================================================

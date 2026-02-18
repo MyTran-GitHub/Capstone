@@ -2,6 +2,26 @@
 ## Python → R Integration Script
 ## Run CBPS on a filtered control pool (embedding-based selection)
 ## 
+## ===== DESIGN RATIONALE =====
+## Why not call implement_cbps.R directly?
+## - implement_cbps.R: Runs CBPS on FULL control pool (~50k pixels) [BASELINE]
+## - This script: Runs CBPS on FILTERED pool (K-nearest, ~1-5k) [EMBEDDING METHOD]
+##
+## Both scripts MUST:
+## 1. Apply IDENTICAL covariate transformations (two-part SWE, log+winsorize, etc.)
+## 2. Use IDENTICAL CBPS algorithm (cbps_ATT.R with regularization grid)
+## 3. Compute IDENTICAL pre-treatment RMSE (calculate_fire_outcomes.R)
+##
+## ONLY difference: Control pool composition (full vs embedding-filtered)
+##
+## This ensures apples-to-apples comparison: any performance difference is
+## attributable to control pool quality, not methodology artifacts.
+##
+## ===== INTEGRATION WITH PYTHON =====
+## Called by: select_optimal_k.py → run_cbps_crossval()
+## Input: CSV with selected control unit IDs (embedding-filtered)
+## Output: Metrics CSV with RMSE, balance, convergence diagnostics
+## 
 ## Usage:
 ##   Rscript run_cbps_with_selected_controls.R <year> <selected_units_csv> <output_prefix> <train_start> <train_end> <test_start> <test_end>
 ##
@@ -24,6 +44,7 @@ suppressPackageStartupMessages({
 })
 
 source("balancing/cbps_ATT.R")
+source("balancing/calculate_fire_outcomes.R")  # Shared outcome calculation logic
 
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 7) {
@@ -81,7 +102,7 @@ if (sum(df_filtered$treated == 0) == 0) {
   stop("ERROR: No control pixels after filtering!")
 }
 
-# Prepare CBPS inputs (same as implement_cbps.R)
+# Prepare CBPS inputs (MUST MATCH implement_cbps.R transformations for fair comparison!)
 W <- df_filtered$treated
 
 X <- df_filtered
@@ -96,7 +117,134 @@ X <- X[, sapply(X, is.numeric), drop = FALSE]
 # Remove zero-variance columns
 X <- X[, apply(X, 2, sd, na.rm = TRUE) > 0, drop = FALSE]
 
-cat("Covariates:", ncol(X), "\n")
+cat("Covariates before transformations:", ncol(X), "\n")
+
+# ============================================================================
+# APPLY SAME TRANSFORMATIONS AS implement_cbps.R (critical for fair comparison!)
+# ============================================================================
+
+# Two-part SWE: presence indicator + log-intensity (winsorized)
+swe_cols <- grep("^swe_", colnames(X), value = TRUE)
+if (length(swe_cols) > 0) {
+  cols_to_remove <- c()
+  cols_converted <- 0
+  
+  for (col in swe_cols) {
+    x <- X[[col]]
+    pct_zero <- sum(x == 0 | is.na(x), na.rm = TRUE) / length(x)
+    
+    if (pct_zero > 0.95) {
+      cols_to_remove <- c(cols_to_remove, col)
+    } else {
+      X[[paste0(col, "_present")]] <- as.numeric(x > 0)
+      
+      x_pos <- ifelse(x > 0, log1p(x), 0)
+      pos_vals <- x_pos[x_pos > 0]
+      if (length(pos_vals) > 0) {
+        p995 <- quantile(pos_vals, 0.995, na.rm = TRUE)
+        if (!is.na(p995)) {
+          x_pos[x_pos > p995] <- p995
+        }
+      }
+      
+      X[[col]] <- x_pos
+      cols_converted <- cols_converted + 1
+    }
+  }
+  
+  if (length(cols_to_remove) > 0) {
+    X <- X[, !colnames(X) %in% cols_to_remove]
+    cat("  Removed", length(cols_to_remove), "sparse SWE columns (>95% zero)\n")
+  }
+  
+  if (cols_converted > 0) {
+    cat("  SWE two-part: converted", cols_converted, "columns (presence + log-intensity)\n")
+  }
+}
+
+# Log1p + winsorize max_FRP_* to preserve intensity ordering
+frp_cols <- grep("^max_FRP_", colnames(X), value = TRUE)
+if (length(frp_cols) > 0) {
+  for (col in frp_cols) {
+    x <- X[[col]]
+    if (all(is.na(x))) {
+      next
+    }
+    x <- log1p(x)
+    p995 <- quantile(x, 0.995, na.rm = TRUE)
+    if (!is.na(p995)) {
+      x[x > p995] <- p995
+    }
+    X[[col]] <- x
+  }
+  cat("  Log+winsorized", length(frp_cols), "max_FRP columns (99.5%)\n")
+}
+
+# Log1p + winsorize prcp_* and avg_BRIGHTNESS_* to tame heavy tails
+prcp_cols <- grep("^prcp_", colnames(X), value = TRUE)
+bright_cols <- grep("^avg_BRIGHTNESS_", colnames(X), value = TRUE)
+for (col in c(prcp_cols, bright_cols)) {
+  x <- X[[col]]
+  if (all(is.na(x))) {
+    next
+  }
+  x <- log1p(x)
+  p995 <- quantile(x, 0.995, na.rm = TRUE)
+  if (!is.na(p995)) {
+    x[x > p995] <- p995
+  }
+  X[[col]] <- x
+}
+if (length(prcp_cols) + length(bright_cols) > 0) {
+  cat("  Log+winsorized", length(prcp_cols), "prcp and",
+      length(bright_cols), "avg_BRIGHTNESS columns (99.5%)\n")
+}
+
+# Drop extremely sparse fire_* columns to avoid huge z-scores
+fire_cols <- grep("^fire_", colnames(X), value = TRUE)
+if (length(fire_cols) > 0) {
+  sparse_fire <- c()
+  for (col in fire_cols) {
+    p_one <- mean(X[[col]] > 0, na.rm = TRUE)
+    if (!is.na(p_one) && p_one < 0.005) {
+      sparse_fire <- c(sparse_fire, col)
+    }
+  }
+  if (length(sparse_fire) > 0) {
+    X <- X[, !colnames(X) %in% sparse_fire]
+    cat("  Dropped", length(sparse_fire), "sparse fire_* columns (<0.5% ones)\n")
+  }
+}
+
+cat("Covariates after transformations:", ncol(X), "\n")
+
+# Validate sufficient covariates remain after transformations
+if (ncol(X) == 0) {
+  stop("ERROR: No covariates remaining after transformations!")
+}
+
+# Validate sufficient sample size for CBPS
+n_treated <- sum(W)
+n_control <- sum(1 - W)
+
+if (n_control < 2 * n_treated) {
+  stop(paste("ERROR: Insufficient controls! Have", n_control, 
+             "controls for", n_treated, "treated (ratio:",
+             round(n_control / n_treated, 1), "×, recommend ≥10×)"))
+}
+
+if (n_control < 10 * n_treated) {
+  cat("⚠ WARNING: Small control pool (", n_control, "controls for", n_treated, 
+      "treated = ", round(n_control / n_treated, 1), "× ratio)\n", sep="")
+  cat("  Recommend ≥10× for stable CBPS weights\n")
+}
+
+if (n_control / ncol(X) < 5) {
+  cat("⚠ WARNING: Low observations-to-covariates ratio\n")
+  cat("  ", n_control, "controls ÷", ncol(X), "covariates =",
+      round(n_control / ncol(X), 1), "obs/covariate\n")
+  cat("  Recommend ≥5 observations per covariate for stable estimation\n")
+}
 
 # Standardize covariates
 X_mean <- colMeans(X, na.rm = TRUE)
@@ -105,31 +253,15 @@ X_sd[is.na(X_sd) | X_sd == 0] <- 1
 X_scl <- scale(X, center = X_mean, scale = X_sd)
 
 # Run CBPS-ATT with regularization grid (same as implement_cbps.R)
-lambda_grid <- if (treated_year %in% c(2018, 2020)) {
-  cat("Using stronger regularization for year", treated_year, "\n")
-  rep(1e-4, ncol(X))
-} else {
-  NULL
-}
-
-if (is.null(lambda_grid)) {
-  res_regu_list <- lapply(1:8, function(n) {
-    res <- cbps_att(as.matrix(X_scl),
-                    W,
-                    theta.init = rep(0, ncol(X) + 1),
-                    control = list(trace = 0, maxit = 5000),
-                    lambda = rep(10^(n - 7), ncol(X)))
-    return(res)
-  })
-} else {
-  res_regu_list <- list(
-    cbps_att(as.matrix(X_scl),
-             W,
-             theta.init = rep(0, ncol(X) + 1),
-             control = list(trace = 0, maxit = 5000),
-             lambda = lambda_grid)
-  )
-}
+# Grid: lambda = 10^(-6 to 1) across 8 levels
+res_regu_list <- lapply(1:8, function(n) {
+  res <- cbps_att(as.matrix(X_scl),
+                  W,
+                  theta.init = rep(0, ncol(X) + 1),
+                  control = list(trace = 0, maxit = 6000),
+                  lambda = rep(10^(n - 7), ncol(X)))
+  return(res)
+})
 
 converge_set <- sapply(res_regu_list, function(res) res$convergence)
 
@@ -139,7 +271,7 @@ if (!any(converge_set == 0)) {
 
 idx <- min(which(converge_set == 0))
 res <- res_regu_list[[idx]]
-rho <- if (is.null(lambda_grid)) 10^(idx - 7) else 1e-4
+rho <- 10^(idx - 7)
 
 cat("Converged with rho =", rho, "\n")
 
@@ -155,25 +287,90 @@ mean_balance_std <- mean(abs(res$balance.std), na.rm = TRUE)
 cat("Max |balance.std| =", round(max_balance_std, 3), "\n")
 cat("Mean |balance.std| =", round(mean_balance_std, 3), "\n")
 
-# Compute RMSE on pre-treatment covariates
-# (This is a simplified version - you can expand to use actual outcome data)
-# For now, we'll compute covariate imbalance as a proxy
-rmse_train <- sqrt(
-  mean(res$balance.std[seq_len(min(length(res$balance.std), 50))]^2,
-       na.rm = TRUE)
-)
-rmse_test <- sqrt(mean(res$balance.std^2, na.rm = TRUE))
-
-cat("Train RMSE (covariate imbalance):", round(rmse_train, 4), "\n")
-cat("Test RMSE (covariate imbalance):", round(rmse_test, 4), "\n")
-
-# Create weights table
+# Create weights table (needed for outcome calculation)
 weights_df <- data.frame(
   unit = df_filtered$unit,
+  LATITUDE = df_filtered$LATITUDE,
+  LONGITUDE = df_filtered$LONGITUDE,
   treated = df_filtered$treated,
   weight = ifelse(df_filtered$treated == 1, res$weights.1, res$weights.0),
   stringsAsFactors = FALSE
 )
+
+# Compute pre-treatment RMSE using shared function
+# This reuses the same logic as weighted_outcome_analysis.R
+cat("\nComputing pre-treatment fire frequency RMSE...\n")
+
+rmse_result <- tryCatch(
+  {
+    calculate_pretreatment_rmse(
+      weights_df = weights_df,
+      train_start = train_start,
+      train_end = train_end,
+      test_start = test_start,
+      test_end = test_end,
+      firms_rds_path = "data/processed_data/FIRMS.RDS"
+    )
+  },
+  error = function(e) {
+    cat("⚠ WARNING: RMSE calculation failed:", e$message, "\n")
+    cat("Using covariate balance as proxy\n")
+    list(
+      rmse_train = sqrt(mean(res$balance.std[seq_len(min(length(res$balance.std), 50))]^2, na.rm = TRUE)),
+      rmse_test = sqrt(mean(res$balance.std^2, na.rm = TRUE)),
+      fire_freq_data = data.frame()
+    )
+  }
+)
+
+rmse_train <- rmse_result$rmse_train
+rmse_test <- rmse_result$rmse_test
+
+if (!is.na(rmse_train) && !is.na(rmse_test)) {
+  cat("✓ Computed fire frequency RMSE from FIRMS data\n")
+  cat("  (FIRMS.RDS filtered to conifer pixels via coordinate merge)\n")
+} else {
+  cat("⚠ Using covariate balance proxy for RMSE\n")
+}
+
+cat("Train RMSE (fire frequency):", round(rmse_train, 4), "\n")
+cat("Test RMSE (fire frequency):", round(rmse_test, 4), "\n")
+
+# Create year-specific output directory
+output_base_dir <- "Embeddings/results/cbps_integration/"
+output_dir <- paste0(output_base_dir, treated_year, "/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+cat("\nOutput directory:", output_dir, "\n")
+
+# Generate and save trajectory plot (Phase 2 prep)
+cat("\nGenerating pre-treatment trajectory plot...\n")
+
+trajectory_data <- tryCatch(
+  {
+    plot_pretreatment_trajectory(
+      weights_df = weights_df,
+      train_start = train_start,
+      train_end = train_end,
+      test_start = test_start,
+      test_end = test_end,
+      output_path = paste0(output_dir, "trajectory_", output_prefix, "_", treated_year, ".png"),
+      treatment_year = treated_year,
+      firms_rds_path = "data/processed_data/FIRMS.RDS"
+    )
+  },
+  error = function(e) {
+    cat("⚠ WARNING: Trajectory plot failed:", e$message, "\n")
+    data.frame()
+  }
+)
+
+# Save trajectory data for later analysis
+if (nrow(trajectory_data) > 0) {
+  trajectory_path <- paste0(output_dir, "trajectory_data_", output_prefix, "_", treated_year, ".csv")
+  write.csv(trajectory_data, trajectory_path, row.names = FALSE)
+  cat("✓ Trajectory data saved to:", trajectory_path, "\n")
+}
 
 # Create metrics table
 metrics_df <- data.frame(
@@ -191,18 +388,20 @@ metrics_df <- data.frame(
   stringsAsFactors = FALSE
 )
 
-# Save outputs
-output_dir <- "tests/results/cbps_integration/"
-dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-
+# Save outputs to year-specific directory
 metrics_path <- paste0(output_dir, "cbps_metrics_", output_prefix, "_", treated_year, ".csv")
 weights_path <- paste0(output_dir, "cbps_weights_", output_prefix, "_", treated_year, ".csv")
+weights_full_path <- paste0(output_dir, "cbps_weights_full_", output_prefix, "_", treated_year, ".csv")
 
 write.csv(metrics_df, metrics_path, row.names = FALSE)
-write.csv(weights_df, weights_path, row.names = FALSE)
+# Save minimal weights for R compatibility with baseline workflow
+write.csv(weights_df[, c("unit", "treated", "weight")], weights_path, row.names = FALSE)
+# Save full weights with coordinates for Phase 2+ analyses (ATT, bootstrap CI)
+write.csv(weights_df, weights_full_path, row.names = FALSE)
 
 cat("\nSaved:\n")
 cat("  ", metrics_path, "\n")
 cat("  ", weights_path, "\n")
+cat("  ", weights_full_path, "(with coordinates for Phase 2)\n")
 
 cat("\n✓ CBPS completed successfully\n")

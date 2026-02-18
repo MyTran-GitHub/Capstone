@@ -354,7 +354,7 @@ def main() -> int:
         data_df = pd.read_csv(input_path)
         logger.info("[INFO] Loaded %s pixels", len(data_df))
 
-        output_csv = args.output_csv or Path(f"embeddings_single_year_{args.year}.csv")
+        output_csv = args.output_csv or Path(f"embeddings_{args.year}.csv")
         success, results_df = extract_embeddings_for_year(data_df, args.year, output_csv)
 
         if success:
