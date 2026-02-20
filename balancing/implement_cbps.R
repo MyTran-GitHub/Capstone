@@ -150,23 +150,23 @@ for (treated.year in years) {
     return(res)
   })
 
-  converge_set <- sapply(res_regu.list, function(res) res$convergence)
+  # Check BOTH convergence AND weight validity during lambda selection
+  # (prevents selecting numerically unstable solutions)
+  converge_set <- sapply(res_regu.list, function(res) {
+    converged <- (res$convergence == 0)
+    valid_weights <- !any(is.na(res$weights.0)) && !any(is.infinite(res$weights.0)) &&
+                     !any(is.na(res$weights.1)) && !any(is.infinite(res$weights.1))
+    return(converged && valid_weights)
+  })
   
-  if (!any(converge_set == 0)) {
-    cat("  No converged solution found, skipping.\n")
+  if (!any(converge_set)) {
+    cat("  No solution with valid convergence AND valid weights found, skipping.\n")
     next
   }
   
-  idx <- min(which(converge_set == 0))
+  idx <- min(which(converge_set))
   res <- res_regu.list[[idx]]
   rho <- 10^(idx - 7)
-  
-  # Validate weights for NAs and infinite values
-  if (any(is.na(res$weights.0)) || any(is.infinite(res$weights.0)) ||
-      any(is.na(res$weights.1)) || any(is.infinite(res$weights.1))) {
-    cat("  ERROR: Invalid weights (NAs or Infs), skipping.\n")
-    next
-  }
   
   # Check post-balance covariate balance
   max_balance_std <- max(abs(res$balance.std), na.rm=TRUE)

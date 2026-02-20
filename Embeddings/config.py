@@ -96,29 +96,51 @@ RDS_DATA_DIR = BASE_DIR.parent / "data" / "processed_data"
 ESD_TILES_DIR = BASE_DIR / "embedding_images"
 ESD_TILES_DIR.mkdir(parents=True, exist_ok=True)
 
-# Output directories
-OUTPUT_EMBEDDINGS_DIR = BASE_DIR / "embeddings"
+# ============================================================================
+# OUTPUT DIRECTORY STRUCTURE (Reorganized 2026-02-20)
+# ============================================================================
+#
+# New structure organizes all outputs under data/ by analysis phase:
+#   data/embeddings/         - Raw embeddings (Phase 0: preprocessing)
+#   data/k_selection/        - K optimization results (Phase 1)
+#   data/cbps_integration/   - CBPS with optimal K (Phase 1)
+#   data/phase2_efficiency/  - Statistical efficiency tests (Phase 2)
+#   data/phase3_robustness/  - Robustness checks (Phase 3)
+#   data/figures/            - Visualization outputs (all phases)
+#
+# Scripts reorganized under scripts/ directory
+# Documentation moved to docs/ directory
+# HPC/SLURM scripts moved to hpc/ directory
+
+# Data output directories
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+OUTPUT_EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 OUTPUT_EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Unused directories - commented out to avoid creating empty folders
-# MATCHES_DIR = BASE_DIR / "matches"
-# MATCHES_DIR.mkdir(parents=True, exist_ok=True)
+K_SELECTION_DIR = DATA_DIR / "k_selection"
+K_SELECTION_DIR.mkdir(parents=True, exist_ok=True)
 
-# ENRICHED_DIR = BASE_DIR / "enriched_matches"
-# ENRICHED_DIR.mkdir(parents=True, exist_ok=True)
+CBPS_INTEGRATION_DIR = DATA_DIR / "cbps_integration"
+CBPS_INTEGRATION_DIR.mkdir(parents=True, exist_ok=True)
 
+PHASE2_DIR = DATA_DIR / "phase2_efficiency"
+PHASE2_DIR.mkdir(parents=True, exist_ok=True)
+
+PHASE3_DIR = DATA_DIR / "phase3_robustness"
+PHASE3_DIR.mkdir(parents=True, exist_ok=True)
+
+FIGURES_DIR = DATA_DIR / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+# Logs directory
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Results directories (for K selection and CBPS integration)
-RESULTS_DIR = BASE_DIR / "results"
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-K_SELECTION_DIR = RESULTS_DIR / "k_selection"
-K_SELECTION_DIR.mkdir(parents=True, exist_ok=True)
-
-CBPS_INTEGRATION_DIR = RESULTS_DIR / "cbps_integration"
-CBPS_INTEGRATION_DIR.mkdir(parents=True, exist_ok=True)
+# Deprecated directories (kept for backward compatibility, but not created)
+# RESULTS_DIR was reorganized into data/k_selection and data/cbps_integration
+RESULTS_DIR = DATA_DIR  # For backward compatibility with old scripts
 
 # ============================================================================
 # FILE PATH FUNCTIONS

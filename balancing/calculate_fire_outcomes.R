@@ -351,40 +351,159 @@ estimate_att_with_ci <- function(weights_df,
                                  outcome_years,
                                  treatment_year,
                                  firms_rds_path = "data/processed_data/FIRMS.RDS",
-                                 cluster_by_unit = TRUE) {
+                                 cluster_by_unit = TRUE,
+                                 alpha = 0.05) {
   #' Estimate ATT with confidence intervals
   #' 
-  #' This function is a STUB for Phase 2 analysis. It computes:
-  #' - ATT: Average treatment effect on the treated
-  #' - Standard errors (with optional clustering by pixel)
+  #' Computes Average Treatment Effect on the Treated with robust/clustered standard errors:
+  #' - ATT: Weighted difference in fire frequency (treated - control)
+  #' - Standard errors: Robust (HC3) or clustered by pixel 
   #' - 95% confidence intervals
   #' 
   #' @param weights_df Data frame with columns: unit, LATITUDE, LONGITUDE, treated, weight
   #' @param outcome_years Vector of post-treatment years to analyze
   #' @param treatment_year Year of treatment
   #' @param firms_rds_path Path to FIRMS.RDS file
-  #' @param cluster_by_unit Whether to cluster standard errors by unit
+  #' @param cluster_by_unit Whether to cluster standard errors by unit (default: TRUE)
+  #' @param alpha Significance level for CI (default: 0.05 for 95% CI)
   #' 
-  #' @return Data frame with columns: year, att, se, ci_lower, ci_upper, ci_width
+  #' @return Data frame with columns: year, method, att, se, ci_lower, ci_upper, ci_width, n_treated, n_control
   
-  cat("⚠ STUB: estimate_att_with_ci() not yet implemented\n")
-  cat("This function will be implemented in Phase 2 for CI width comparison\n")
-  cat("\n")
-  cat("To implement, you need to:\n")
-  cat("1. Calculate post-treatment fire frequency using calculate_fire_frequency()\n")
-  cat("2. Run weighted regression: lm(fire.frac ~ treated, weights = weight)\n")
-  cat("3. Compute robust/clustered standard errors (sandwich package)\n")
-  cat("4. Return ATT estimates with 95% CIs\n")
-  cat("\n")
-  cat("Required packages: lmtest, sandwich\n")
+  if (!requireNamespace("sandwich", quietly = TRUE)) {
+    stop("Package 'sandwich' required for robust standard errors. Install with: install.packages('sandwich')")
+  }
   
-  # Return empty placeholder
-  return(data.frame(
-    year = integer(),
-    att = numeric(),
-    se = numeric(),
-    ci_lower = numeric(),
-    ci_upper = numeric(),
-    ci_width = numeric()
-  ))
+  if (!requireNamespace("lmtest", quietly = TRUE)) {
+    stop("Package 'lmtest' required for regression testing. Install with: install.packages('lmtest')")
+  }
+  
+  # Calculate post-treatment fire frequency
+  fire_freq <- calculate_fire_frequency(
+    weights_df = weights_df,
+    firms_rds_path = firms_rds_path,
+    years_to_include = outcome_years
+  )
+  
+  if (nrow(fire_freq) == 0) {
+    warning("No fire data in post-treatment period")
+    return(data.frame(
+      year = integer(),
+      method = character(),
+      att = numeric(),
+      se = numeric(),
+      ci_lower = numeric(),
+      ci_upper = numeric(),
+      ci_width = numeric(),
+      n_treated = integer(),
+      n_control = integer()
+    ))
+  }
+  
+  # Count units
+  n_treated <- sum(weights_df$treated == 1)
+  n_control <- sum(weights_df$treated == 0)
+  
+  # Merge weights with fire frequency for regression
+  fire_freq_with_weights <- merge(
+    fire_freq,
+    weights_df[, c("unit", "treated", "weight")],
+    by = "treated",
+    all.x = TRUE
+  )
+  
+  # Estimate ATT for each year
+  results_list <- list()
+  
+  for (yr in outcome_years) {
+    fire_year <- fire_freq[fire_freq$year == yr, ]
+    
+    if (nrow(fire_year) == 0) {
+      warning(paste("No fire data for year", yr))
+      next
+    }
+    
+    if (nrow(fire_year) < 2) {
+      warning(paste("Insufficient data for year", yr, "- need both treated and control"))
+      next
+    }
+    
+    # Create dataset for regression: one row per unit
+    # Merge fire.frac with weights_df
+    fire_year_full <- merge(
+      weights_df[, c("unit", "treated", "weight")],
+      fire_year[, c("treated", "fire.frac")],
+      by = "treated",
+      all.x = TRUE
+    )
+    
+    # Handle missing fire.frac (units not in fire data get fire.frac from their group mean)
+    # This is safe because calculate_fire_frequency creates full panel
+    if (anyNA(fire_year_full$fire.frac)) {
+      # Use group mean for missing values
+      fire_year_full$fire.frac[is.na(fire_year_full$fire.frac) & fire_year_full$treated == 0] <- 
+        fire_year$fire.frac[fire_year$treated == 0]
+      fire_year_full$fire.frac[is.na(fire_year_full$fire.frac) & fire_year_full$treated == 1] <- 
+        fire_year$fire.frac[fire_year$treated == 1]
+    }
+    
+    # Weighted regression: E[Y|D=1] - E[Y|D=0] with CBPS weights
+    model <- lm(fire.frac ~ treated, data = fire_year_full, weights = weight)
+    
+    # Extract ATT (coefficient on 'treated')
+    att <- coef(model)["treated"]
+    
+    # Compute robust/clustered standard errors
+    if (cluster_by_unit) {
+      # Clustered by unit (accounts for within-unit correlation)
+      vcov_robust <- sandwich::vcovCL(model, cluster = fire_year_full$unit, type = "HC3")
+    } else {
+      # Heteroskedasticity-robust (HC3)
+      vcov_robust <- sandwich::vcovHC(model, type = "HC3")
+    }
+    
+    se <- sqrt(vcov_robust["treated", "treated"])
+    
+    # Compute confidence interval
+    t_crit <- qt(1 - alpha/2, df = nrow(fire_year_full) - 2)
+    ci_lower <- att - t_crit * se
+    ci_upper <- att + t_crit * se
+    ci_width <- ci_upper - ci_lower
+    
+    # Store results
+    results_list[[length(results_list) + 1]] <- data.frame(
+      year = yr,
+      treatment_year = treatment_year,
+      att = att,
+      se = se,
+      ci_lower = ci_lower,
+      ci_upper = ci_upper,
+      ci_width = ci_width,
+      n_treated = n_treated,
+      n_control = n_control,
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  if (length(results_list) == 0) {
+    warning("No ATT estimates computed")
+    return(data.frame(
+      year = integer(),
+      treatment_year = integer(),
+      att = numeric(),
+      se = numeric(),
+      ci_lower = numeric(),
+      ci_upper = numeric(),
+      ci_width = numeric(),
+      n_treated = integer(),
+      n_control = integer()
+    ))
+  }
+  
+  results_df <- do.call(rbind, results_list)
+  
+  cat("✓ Computed ATT with", ifelse(cluster_by_unit, "clustered", "robust"), "standard errors\n")
+  cat("  Post-treatment years:", paste(outcome_years, collapse = ", "), "\n")
+  cat("  Mean CI width:", round(mean(results_df$ci_width, na.rm = TRUE), 4), "\n")
+  
+  return(results_df)
 }
