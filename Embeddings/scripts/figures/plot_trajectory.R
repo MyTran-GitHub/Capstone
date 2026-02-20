@@ -46,9 +46,9 @@ if (length(args) >= 7) {
   post_years <- NULL
 }
 
-cat("="*80, "\n")
+cat(strrep("=", 80), "\n")
 cat("TRAJECTORY PLOT\n")
-cat("="*80, "\n")
+cat(strrep("=", 80), "\n")
 cat("Treatment year:", treated_year, "\n")
 cat("Optimal K:", optimal_K, "\n")
 cat("Train period:", train_start, "-", train_end, "\n")
@@ -59,7 +59,7 @@ if (!is.null(post_years)) {
 cat("\n")
 
 # Setup output directory
-output_dir <- paste0("Embeddings/data/figures/trajectory_plots/")
+output_dir <- paste0("data/figures/trajectory_plots/")
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ============================================================================
@@ -81,7 +81,7 @@ weights_baseline <- weights_baseline_list$weights
 cat("✓ Baseline weights loaded:", nrow(weights_baseline), "pixels\n")
 
 # Embedding weights
-embedding_weights_file <- paste0("Embeddings/data/cbps_integration/", treated_year,
+embedding_weights_file <- paste0("data/cbps_integration/", treated_year,
                                 "/cbps_weights_full_k", optimal_K, "_", treated_year, ".csv")
 
 if (!file.exists(embedding_weights_file)) {
@@ -240,21 +240,11 @@ cat("✓ Saved PNG version to:", plot_file_png, "\n\n")
 # STEP 4: Create gap plot (treated - control difference)
 # ============================================================================
 
-cat("Creating gap plot...\n")
-
 p_gap <- ggplot(fire_wide, aes(x = year, y = gap, color = method)) +
-  # Pre-treatment reference (should be near zero)
   geom_hline(yintercept = 0, linetype = "dotted", color = "gray60") +
-  # Treatment year line
-  geom_vline(xintercept = treated_year, linetype = "dashed", 
-             color = "gray40", linewidth = 0.7) +
-  annotate("text", x = treated_year, y = Inf,
-           label = paste("Treatment:", treated_year),
-           vjust = 1.5, hjust = -0.1, color = "gray30", size = 3.5) +
-  # Gap trajectories
+  geom_vline(xintercept = treated_year, linetype = "dashed", color = "gray40") +
   geom_line(linewidth = 1) +
   geom_point(size = 2.5) +
-  # Styling
   scale_color_manual(
     name = "Method",
     values = c("Baseline" = "#377EB8", "Embedding" = "#FF7F00")
@@ -274,33 +264,54 @@ p_gap <- ggplot(fire_wide, aes(x = year, y = gap, color = method)) +
   )
 
 # Save gap plot
-gap_file <- paste0(output_dir, "gap_", treated_year, "_k", optimal_K, ".pdf")
-ggsave(gap_file, plot = p_gap, width = 10, height = 6, dpi = 600)
-cat("✓ Saved gap plot to:", gap_file, "\n")
+gap_file_png <- paste0(output_dir, "gap_", treated_year, "_k", optimal_K, ".png")
 
 gap_file_png <- paste0(output_dir, "gap_", treated_year, "_k", optimal_K, ".png")
 ggsave(gap_file_png, plot = p_gap, width = 10, height = 6, dpi = 300)
 cat("✓ Saved PNG version to:", gap_file_png, "\n\n")
+
+# --- Quick re-plot instructions ---
+# To re-plot the gap plot without rerunning analysis:
+# 1. Open R and set working directory to project root.
+# 2. Load gap data:
+#    gap_file_data <- paste0("data/cbps_integration/", treated_year,
+#                           "/gap_comparison_k", optimal_K, "_", treated_year, ".csv")
+#    fire_wide <- read.csv(gap_file_data)
+# 3. Recreate gap plot with:
+#    p_gap <- ggplot(fire_wide, aes(x = year, y = gap, color = method, group = method)) +
+#      geom_hline(yintercept = 0, linetype = "dotted", color = "gray60") +
+#      geom_vline(xintercept = treated_year, linetype = "dashed", color = "gray40") +
+#      geom_line(linewidth = 1) +
+#      geom_point(size = 2.5) +
+#      scale_color_manual(name = "Method", values = c("Baseline" = "#377EB8", "Embedding" = "#FF7F00")) +
+#      labs(title = paste("Treatment Effect Gap: Treated - Control (K =", optimal_K, ")"),
+#           subtitle = "Pre-treatment gap should be near zero (parallel trends)",
+#           x = "Year", y = "Fire Frequency Gap (Treated - Control)") +
+#      theme_minimal() +
+#      theme(legend.position = "bottom", plot.title = element_text(face = "bold", size = 14),
+#            plot.subtitle = element_text(size = 10, color = "gray30"), panel.grid.minor = element_blank())
+#    ggsave("gap_quick_replot.png", plot = p_gap, width = 10, height = 6, dpi = 300)
+
 
 # ============================================================================
 # STEP 5: Save trajectory data
 # ============================================================================
 
 # Save combined trajectory data for further analysis
-trajectory_file <- paste0("Embeddings/data/cbps_integration/", treated_year,
+trajectory_file <- paste0("data/cbps_integration/", treated_year,
                          "/trajectory_comparison_k", optimal_K, "_", treated_year, ".csv")
 write.csv(fire_combined, trajectory_file, row.names = FALSE)
 cat("✓ Saved trajectory data to:", trajectory_file, "\n")
 
 # Save gap data
-gap_file_data <- paste0("Embeddings/data/cbps_integration/", treated_year,
+gap_file_data <- paste0("data/cbps_integration/", treated_year,
                        "/gap_comparison_k", optimal_K, "_", treated_year, ".csv")
 write.csv(fire_wide, gap_file_data, row.names = FALSE)
 cat("✓ Saved gap data to:", gap_file_data, "\n\n")
 
-cat("="*80, "\n")
+cat(strrep("=", 80), "\n")
 cat("TRAJECTORY PLOTS COMPLETE\n")
-cat("="*80, "\n")
+cat(strrep("=", 80), "\n")
 cat("\nOutputs:\n")
 cat("1.", plot_file, "\n")
 cat("2.", gap_file, "\n")

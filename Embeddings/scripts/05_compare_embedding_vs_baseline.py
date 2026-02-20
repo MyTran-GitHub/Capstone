@@ -231,7 +231,7 @@ def main():
     logger.info("")
     
     # 2. Load baseline metrics
-    logger.pinfo("="*80)
+    logger.info("="*80)
     logger.info("LOADING BASELINE METRICS")
     logger.info("="*80)
     
