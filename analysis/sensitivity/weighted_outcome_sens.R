@@ -17,7 +17,7 @@ outDir = "../data/processed_data/"
 start_year = 2008
   # By lagged
   parameters <- expand.grid(c("conifer", "hardwood"), c(1:9))
-  for (year_area in 1:nrow(parameters)) {
+  for (year_area in seq_len(nrow(parameters))) {
     area <- as.character(parameters[year_area, 1])
     lagged <- as.numeric(parameters[year_area, 2])
     #year_area = 1

@@ -46,7 +46,7 @@ all.lags = 1:9
 raw.plot = expand.grid(Year=all.end.years, Lag=all.lags)
 raw.plot$ratio.estimte = NA
 raw.plot$Baseline = NA
-for(iter in 1:nrow(raw.plot)) {
+for(iter in seq_len(nrow(raw.plot))) {
   YYY = raw.plot$Year[iter]
   LLL = raw.plot$Lag[iter]
   DDD = subset(data.reg, end.year == YYY & lag == LLL)
@@ -103,7 +103,7 @@ ggsave(file.path(resDir, paste("cmp", biome, fire_type, ".jpeg", sep="_")),
 
 ### CI for synthesized analysis
 
-jackreps = t(sapply(1:length(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
+jackreps = t(sapply(seq_along(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
 colnames(jackreps) = all.lags
 
 jackvar = apply(jackreps, 2, function(xx) { var(xx) * (length(xx) - 1)^2 / length(xx) })
@@ -112,7 +112,7 @@ jackse = sqrt(jackvar)
 rat = exp(full.reg)
 ub.rat = exp(full.reg + 1.96 * jackse)
 lb.rat = exp(full.reg - 1.96 * jackse)
-results <-  data.frame(year = 1:length(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
+results <-  data.frame(year = seq_along(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
 
 res[[k]] =   ggplot(data = results, aes(x = year, y = rate, color = land_type)) +
   geom_ribbon(data = results, aes(ymin = lower, ymax = upper), fill = "grey70", alpha=0.3) +
@@ -179,7 +179,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     raw.plot = expand.grid(Year=all.end.years, Lag=all.lags)
     raw.plot$ratio.estimte = NA
     raw.plot$Baseline = NA
-    for(iter in 1:nrow(raw.plot)) {
+    for(iter in seq_len(nrow(raw.plot))) {
       YYY = raw.plot$Year[iter]
       LLL = raw.plot$Lag[iter]
       DDD = subset(data.reg, end.year == YYY & lag == LLL)
@@ -207,7 +207,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
         if (outcome == "fire_95") {fire_type <- "class 3-5 fires"} 
     
     ### CI for synthesized analysis  
-    jackreps = t(sapply(1:length(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
+    jackreps = t(sapply(seq_along(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
     colnames(jackreps) = all.lags
     
     jackvar = apply(jackreps, 2, function(xx) { var(xx) * (length(xx) - 1)^2 / length(xx) })
@@ -216,7 +216,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     rat = exp(full.reg)
     ub.rat = exp(full.reg + qnorm(0.95) * jackse)
     lb.rat = exp(full.reg - 1000 * jackse)
-    results <-  data.frame(year = 1:length(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
+    results <-  data.frame(year = seq_along(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
     
     res[[k]] =   ggplot(data = results, aes(x = year, y = rate, color = land_type)) +
       geom_ribbon(data = results, aes(ymin = lower, ymax = upper), fill = "grey70", alpha=0.3) +
@@ -281,7 +281,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     raw.plot = expand.grid(Year=all.end.years, Lag=all.lags)
     raw.plot$ratio.estimte = NA
     raw.plot$Baseline = NA
-    for(iter in 1:nrow(raw.plot)) {
+    for(iter in seq_len(nrow(raw.plot))) {
       YYY = raw.plot$Year[iter]
       LLL = raw.plot$Lag[iter]
       DDD = subset(data.reg, end.year == YYY & lag == LLL)
@@ -305,7 +305,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     full.reg = jackfun(all.end.years)
     
     ### CI for synthesized analysis    
-    jackreps = t(sapply(1:length(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
+    jackreps = t(sapply(seq_along(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
     colnames(jackreps) = all.lags
     
     jackvar = apply(jackreps, 2, function(xx) { var(xx) * (length(xx) - 1)^2 / length(xx) })
@@ -314,7 +314,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     rat = exp(full.reg)
     ub.rat = exp(full.reg + 1.96 * jackse)
     lb.rat = exp(full.reg - 1.96 * jackse)
-    results <-  data.frame(year = 1:length(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
+    results <-  data.frame(year = seq_along(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
     
     if (outcome == "fire_all") {fire_type <- "all fires by MTBS"} else 
       if (outcome == "fire_90") {fire_type <- "moderate/high-severity fires"} else 
@@ -382,7 +382,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     raw.plot = expand.grid(Year=all.end.years, Lag=all.lags)
     raw.plot$ratio.estimte = NA
     raw.plot$Baseline = NA
-    for(iter in 1:nrow(raw.plot)) {
+    for(iter in seq_len(nrow(raw.plot))) {
       YYY = raw.plot$Year[iter]
       LLL = raw.plot$Lag[iter]
       DDD = subset(data.reg, end.year == YYY & lag == LLL)
@@ -406,7 +406,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     full.reg = jackfun(all.end.years)
     
     ### CI for synthesized analysis   
-    jackreps = t(sapply(1:length(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
+    jackreps = t(sapply(seq_along(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
     colnames(jackreps) = all.lags
     
     jackvar = apply(jackreps, 2, function(xx) { var(xx) * (length(xx) - 1)^2 / length(xx) })
@@ -415,7 +415,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     rat = exp(full.reg)
     ub.rat = exp(full.reg + 1.96 * jackse)
     lb.rat = exp(full.reg - 1.96 * jackse)
-    results <-  data.frame(year = 1:length(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
+    results <-  data.frame(year = seq_along(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
     
     if (outcome == "fire_all") {fire_type <- "all fires"} else 
       if (outcome == "fire_90") {fire_type <- "class 2-5 fires"} else 
@@ -485,7 +485,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     raw.plot = expand.grid(Year=all.end.years, Lag=all.lags)
     raw.plot$ratio.estimte = NA
     raw.plot$Baseline = NA
-    for(iter in 1:nrow(raw.plot)) {
+    for(iter in seq_len(nrow(raw.plot))) {
       YYY = raw.plot$Year[iter]
       LLL = raw.plot$Lag[iter]
       DDD = subset(data.reg, end.year == YYY & lag == LLL)
@@ -509,7 +509,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     full.reg = jackfun(all.end.years)
     
     ### CI for synthesized analysis  
-    jackreps = t(sapply(1:length(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
+    jackreps = t(sapply(seq_along(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
     colnames(jackreps) = all.lags
     
     jackvar = apply(jackreps, 2, function(xx) { var(xx) * (length(xx) - 1)^2 / length(xx) })
@@ -518,7 +518,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     rat = exp(full.reg)
     ub.rat = exp(full.reg + 1.96 * jackse)
     lb.rat = exp(full.reg - 1.96 * jackse)
-    results <-  data.frame(year = 1:length(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
+    results <-  data.frame(year = seq_along(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
     
     if (outcome == "fire_all") {fire_type <- "all fires"} else 
       if (outcome == "fire_90") {fire_type <- "class 2-5 fires"} else 
@@ -588,7 +588,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     raw.plot = expand.grid(Year=all.end.years, Lag=all.lags)
     raw.plot$ratio.estimte = NA
     raw.plot$Baseline = NA
-    for(iter in 1:nrow(raw.plot)) {
+    for(iter in seq_len(nrow(raw.plot))) {
       YYY = raw.plot$Year[iter]
       LLL = raw.plot$Lag[iter]
       DDD = subset(data.reg, end.year == YYY & lag == LLL)
@@ -612,7 +612,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     full.reg = jackfun(all.end.years)
     
     ### CI for synthesized analysis
-    jackreps = t(sapply(1:length(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
+    jackreps = t(sapply(seq_along(all.end.years), function(ii) { jackfun(all.end.years[-ii]) }))
     colnames(jackreps) = all.lags
     
     jackvar = apply(jackreps, 2, function(xx) { var(xx) * (length(xx) - 1)^2 / length(xx) })
@@ -621,7 +621,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     rat = exp(full.reg)
     ub.rat = exp(full.reg + 1.96 * jackse)
     lb.rat = exp(full.reg - 1.96 * jackse)
-    results <-  data.frame(year = 1:length(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
+    results <-  data.frame(year = seq_along(rat), rate = rat, lower = lb.rat, upper = ub.rat, "land_type" = rep(capitalize(biome), length(rat)))
     
     if (outcome == "fire_all") {fire_type <- "all fires"} else 
       if (outcome == "fire_90") {fire_type <- "class 2-5 fires"} else 
@@ -693,7 +693,7 @@ for (outcome in c("fire_all", "fire_90", "fire_95")) {
     raw.plot = expand.grid(Year=all.end.years, Lag=all.lags)
     raw.plot$ratio.estimte = NA
     raw.plot$Baseline = NA
-    for(iter in 1:nrow(raw.plot)) {
+    for(iter in seq_len(nrow(raw.plot))) {
       YYY = raw.plot$Year[iter]
       LLL = raw.plot$Lag[iter]
       DDD = subset(data.reg, end.year == YYY & lag == LLL)

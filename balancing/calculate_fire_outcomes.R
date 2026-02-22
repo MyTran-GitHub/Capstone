@@ -31,6 +31,37 @@ calculate_fire_frequency <- function(weights_df,
   #' @param years_to_include Vector of years to include (NULL = all years)
   #' 
   #' @return Data frame with columns: year, treated, fire.frac, sum.fire, denom
+
+  # DIAGNOSTICS: Print structure before merge
+  cat("\n--- DIAGNOSTICS: weights_df structure ---\n")
+  print(str(weights_df))
+  cat("\n--- DIAGNOSTICS: firms_base structure ---\n")
+  # Load FIRMS fire data
+  firms_base <- readRDS(firms_rds_path)
+  print(str(firms_base))
+  cat("\n--- DIAGNOSTICS: head(weights_df) ---\n")
+  print(head(weights_df, 10))
+  cat("\n--- DIAGNOSTICS: head(firms_base) ---\n")
+  print(head(firms_base, 10))
+
+  firms_base$unit <- paste0(firms_base$LATITUDE, firms_base$LONGITUDE)
+  firms_base$has.fire <- 1
+
+  # Extract control and treated units (matching weighted_outcome_analysis.R lines 47-48)
+  control_units <- weights_df$unit[weights_df$treated == 0]
+  treated_units <- weights_df$unit[weights_df$treated == 1]
+
+  # Merge FIRMS with weights by coordinates (matching line 49-51)
+  firms <- merge(firms_base,
+                 weights_df[, c("LATITUDE", "LONGITUDE", "weight")],
+                 by = c("LATITUDE", "LONGITUDE"),
+                 all.x = TRUE)
+
+  # DIAGNOSTICS: Print structure after merge
+  cat("\n--- DIAGNOSTICS: merged firms structure ---\n")
+  print(str(firms))
+  cat("\n--- DIAGNOSTICS: head(merged firms) ---\n")
+  print(head(firms, 10))
   
   if (!requireNamespace("dplyr", quietly = TRUE)) {
     stop("Package 'dplyr' required")
@@ -264,9 +295,9 @@ plot_pretreatment_trajectory <- function(weights_df,
   
   # Reshape for plotting: pivot to wide format
   fire_wide <- fire_freq %>%
-    dplyr::select(year, treated, fire.frac) %>%
+    dplyr::select(year, treated, hifire95.frac) %>%
     tidyr::pivot_wider(names_from = treated, 
-                      values_from = fire.frac, 
+                      values_from = hifire95.frac, 
                       names_prefix = "treated_")
   
   # Compute gap (treated - control)
@@ -278,15 +309,15 @@ plot_pretreatment_trajectory <- function(weights_df,
     fire_long <- fire_freq %>%
       dplyr::mutate(group = ifelse(treated == 1, "Treated", "Control"))
     
-    p <- ggplot2::ggplot(fire_long, ggplot2::aes(x = year, y = fire.frac, color = group)) +
+    p <- ggplot2::ggplot(fire_long, ggplot2::aes(x = year, y = hifire95.frac, color = group)) +
       ggplot2::geom_line(linewidth = 1) +
       ggplot2::geom_point(size = 2) +
       ggplot2::scale_color_manual(values = c("Treated" = "#E41A1C", "Control" = "#377EB8")) +
       ggplot2::labs(
-        title = "Pre-treatment Fire Frequency Trajectory",
+        title = "Pre-treatment High-Intensity Fire Frequency Trajectory",
         subtitle = "Parallel trends = successful matching",
         x = "Year",
-        y = "Weighted Fire Frequency",
+        y = "Weighted High-Intensity Fire Frequency",
         color = "Group"
       ) +
       ggplot2::theme_minimal() +
@@ -304,7 +335,7 @@ plot_pretreatment_trajectory <- function(weights_df,
                                    linewidth = 0.5) +
         ggplot2::annotate("text", 
                          x = treatment_year, 
-                         y = max(fire_long$fire.frac, na.rm = TRUE) * 0.95,
+                         y = max(fire_long$hifire95.frac, na.rm = TRUE) * 0.95,
                          label = paste("Treatment:", treatment_year),
                          color = "gray30",
                          hjust = -0.1,
@@ -318,7 +349,7 @@ plot_pretreatment_trajectory <- function(weights_df,
                               alpha = 0.1, fill = "blue") +
       ggplot2::annotate("text",
                        x = mean(c(train_start, train_end)),
-                       y = min(fire_long$fire.frac, na.rm = TRUE),
+                       y = min(fire_long$hifire95.frac, na.rm = TRUE),
                        label = "Train",
                        color = "blue",
                        size = 3) +
@@ -328,7 +359,7 @@ plot_pretreatment_trajectory <- function(weights_df,
                        alpha = 0.1, fill = "green") +
       ggplot2::annotate("text",
                        x = mean(c(test_start, test_end)),
-                       y = min(fire_long$fire.frac, na.rm = TRUE),
+                       y = min(fire_long$hifire95.frac, na.rm = TRUE),
                        label = "Test",
                        color = "darkgreen",
                        size = 3)
@@ -431,23 +462,23 @@ estimate_att_with_ci <- function(weights_df,
     # Merge fire.frac with weights_df
     fire_year_full <- merge(
       weights_df[, c("unit", "treated", "weight")],
-      fire_year[, c("treated", "fire.frac")],
+      fire_year[, c("treated", "hifire95.frac")],
       by = "treated",
       all.x = TRUE
     )
     
     # Handle missing fire.frac (units not in fire data get fire.frac from their group mean)
     # This is safe because calculate_fire_frequency creates full panel
-    if (anyNA(fire_year_full$fire.frac)) {
+    if (anyNA(fire_year_full$hifire95.frac)) {
       # Use group mean for missing values
-      fire_year_full$fire.frac[is.na(fire_year_full$fire.frac) & fire_year_full$treated == 0] <- 
-        fire_year$fire.frac[fire_year$treated == 0]
-      fire_year_full$fire.frac[is.na(fire_year_full$fire.frac) & fire_year_full$treated == 1] <- 
-        fire_year$fire.frac[fire_year$treated == 1]
+      fire_year_full$hifire95.frac[is.na(fire_year_full$hifire95.frac) & fire_year_full$treated == 0] <- 
+        fire_year$hifire95.frac[fire_year$treated == 0]
+      fire_year_full$hifire95.frac[is.na(fire_year_full$hifire95.frac) & fire_year_full$treated == 1] <- 
+        fire_year$hifire95.frac[fire_year$treated == 1]
     }
     
     # Weighted regression: E[Y|D=1] - E[Y|D=0] with CBPS weights
-    model <- lm(fire.frac ~ treated, data = fire_year_full, weights = weight)
+    model <- lm(hifire95.frac ~ treated, data = fire_year_full, weights = weight)
     
     # Extract ATT (coefficient on 'treated')
     att <- coef(model)["treated"]
@@ -501,9 +532,8 @@ estimate_att_with_ci <- function(weights_df,
   
   results_df <- do.call(rbind, results_list)
   
-  cat("✓ Computed ATT with", ifelse(cluster_by_unit, "clustered", "robust"), "standard errors\n")
+  cat("✓ Computed ATT for high-intensity fire (hifire95.frac) with", ifelse(cluster_by_unit, "clustered", "robust"), "standard errors\n")
   cat("  Post-treatment years:", paste(outcome_years, collapse = ", "), "\n")
   cat("  Mean CI width:", round(mean(results_df$ci_width, na.rm = TRUE), 4), "\n")
-  
   return(results_df)
 }

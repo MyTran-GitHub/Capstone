@@ -144,14 +144,14 @@ fire_combined$period[fire_combined$year > treated_year] <- "Post-treatment"
 # Add group labels
 fire_combined$group <- ifelse(fire_combined$treated == 1, "Treated", "Control")
 
-# Calculate gap (treated - control) for each method
+ # Calculate gap (treated - control) for each method using hifire95.frac
 fire_wide <- fire_combined %>%
-  select(year, method, treated, fire.frac) %>%
-  pivot_wider(names_from = treated, values_from = fire.frac, names_prefix = "treated_") %>%
+  select(year, method, treated, hifire95.frac) %>%
+  pivot_wider(names_from = treated, values_from = hifire95.frac, names_prefix = "treated_") %>%
   mutate(gap = treated_1 - treated_0)
 
-# Create comprehensive plot
-p <- ggplot(fire_combined, aes(x = year, y = fire.frac, 
+ # Create comprehensive plot using hifire95.frac
+p <- ggplot(fire_combined, aes(x = year, y = hifire95.frac, 
                                color = interaction(method, group),
                                linetype = group)) +
   # Pre-treatment region (train)
@@ -198,17 +198,17 @@ p <- ggplot(fire_combined, aes(x = year, y = fire.frac,
     values = c("Treated" = 16, "Control" = 1)
   ) +
   labs(
-    title = paste("Fire Frequency Trajectory: Baseline vs Embedding (K =", optimal_K, ")"),
+    title = paste("High-Intensity Fire Frequency Trajectory: Baseline vs Embedding (K =", optimal_K, ")"),
     subtitle = paste("Treatment year:", treated_year, "| Parallel trends = successful matching"),
     x = "Year",
-    y = "Weighted Fire Frequency",
+    y = "Weighted High-Intensity Fire Frequency",
     caption = paste("Pre-treatment RMSE - Baseline:",
-                    round(sqrt(mean((fire_baseline$fire.frac[fire_baseline$year %in% pre_years & fire_baseline$treated == 1] -
-                                       fire_baseline$fire.frac[fire_baseline$year %in% pre_years & fire_baseline$treated == 0])^2,
+                    round(sqrt(mean((fire_baseline$hifire95.frac[fire_baseline$year %in% pre_years & fire_baseline$treated == 1] -
+                                       fire_baseline$hifire95.frac[fire_baseline$year %in% pre_years & fire_baseline$treated == 0])^2,
                                    na.rm = TRUE)), 4),
                     "| Embedding:",
-                    round(sqrt(mean((fire_embedding$fire.frac[fire_embedding$year %in% pre_years & fire_embedding$treated == 1] -
-                                       fire_embedding$fire.frac[fire_embedding$year %in% pre_years & fire_embedding$treated == 0])^2,
+                    round(sqrt(mean((fire_embedding$hifire95.frac[fire_embedding$year %in% pre_years & fire_embedding$treated == 1] -
+                                       fire_embedding$hifire95.frac[fire_embedding$year %in% pre_years & fire_embedding$treated == 0])^2,
                                    na.rm = TRUE)), 4))
   ) +
   theme_minimal() +
@@ -240,6 +240,8 @@ cat("✓ Saved PNG version to:", plot_file_png, "\n\n")
 # STEP 4: Create gap plot (treated - control difference)
 # ============================================================================
 
+
+# Gap plot for high-intensity fire frequency
 p_gap <- ggplot(fire_wide, aes(x = year, y = gap, color = method)) +
   geom_hline(yintercept = 0, linetype = "dotted", color = "gray60") +
   geom_vline(xintercept = treated_year, linetype = "dashed", color = "gray40") +
@@ -250,10 +252,10 @@ p_gap <- ggplot(fire_wide, aes(x = year, y = gap, color = method)) +
     values = c("Baseline" = "#377EB8", "Embedding" = "#FF7F00")
   ) +
   labs(
-    title = paste("Treatment Effect Gap: Treated - Control (K =", optimal_K, ")"),
+    title = paste("Treatment Effect Gap: Treated - Control (High-Intensity, K =", optimal_K, ")"),
     subtitle = "Pre-treatment gap should be near zero (parallel trends)",
     x = "Year",
-    y = "Fire Frequency Gap (Treated - Control)"
+    y = "High-Intensity Fire Frequency Gap (Treated - Control)"
   ) +
   theme_minimal() +
   theme(

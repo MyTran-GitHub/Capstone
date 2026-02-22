@@ -349,6 +349,16 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
     try:
         # Call R script
         r_script = "Embeddings/scripts/04_run_cbps_with_selected_controls.R"
+        # Capstone root is three levels up from this script (Embeddings/scripts/ -> Capstone)
+        capstone_root = Path(__file__).parent.parent.parent
+        abs_r_script = capstone_root / r_script
+        logger.info(f"    [DEBUG] Current working directory for R call: {capstone_root.resolve()}")
+        logger.info(f"    [DEBUG] R script relative path: {r_script}")
+        logger.info(f"    [DEBUG] R script absolute path: {abs_r_script.resolve()}")
+        if not abs_r_script.exists():
+            logger.error(f"    [ERROR] R script does NOT exist at: {abs_r_script.resolve()}")
+        else:
+            logger.info(f"    [DEBUG] R script found at: {abs_r_script.resolve()}")
         cmd = [
             "Rscript",
             r_script,
@@ -365,7 +375,7 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
             cmd,
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent.parent  # Run from Capstone/ root (Embeddings/../)
+            cwd=capstone_root  # Run from Capstone root
         )
         if result.returncode != 0:
             logger.error(f"R script failed with return code {result.returncode}")
@@ -483,38 +493,27 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     logger.info(f"K candidates: {K_candidates}")
     logger.info(f"Min control ratio: {min_ratio}× treated")
     logger.info(f"Parallelization: {max_workers} workers")
-    # Step 1: Elbow analysis (compute similarity for each K)
+    # Step 1: Compute similarity metrics for each K (for diagnostics only)
     elbow_df = compute_elbow_metrics(similarities, K_candidates)
-    # Step 1b: Filter by elbow (drop K beyond similarity plateau)
-    K_after_elbow = filter_by_elbow(elbow_df, drop_threshold=0.02)
-    if not K_after_elbow:
-        logger.error("Elbow filtering removed all K candidates!")
-        logger.error("Try smaller drop_threshold or check similarity computation")
-        return None
-    # Step 2: Check pool sizes (only on K passing elbow filter)
-    valid_K = check_pool_sizes(similarities, K_after_elbow, n_treated, min_ratio)
+    # Step 2: Check pool sizes (only filter by pool size)
+    valid_K = check_pool_sizes(similarities, K_candidates, n_treated, min_ratio)
     if not valid_K:
         logger.error("No K values produce large enough control pools!")
         logger.error(f"Try smaller min_ratio (current: {min_ratio}) or larger K values")
         return None
     logger.info(f"\nValid K values for RMSPE testing: {valid_K}")
-    
-    # Step 3a: Determine which K values need computation (respect cache)
-    logger.info(f"\nStep 3: Running CBPS + RMSPE cross-validation...")
+
+    # Step 3: Run CBPS + RMSPE cross-validation
     from config import CBPS_INTEGRATION_DIR
-    
     K_to_compute = []
     K_cached = []
-    
     for K in valid_K:
         output_prefix = f"k{K}"
         metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
-        
         if metrics_file.exists() and not force_recompute:
             K_cached.append(K)
         else:
             K_to_compute.append(K)
-    
     # Log cache status
     if not force_recompute:
         logger.info(f"  Cache status: {len(K_cached)} cached, {len(K_to_compute)} need computation")
@@ -524,10 +523,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             logger.info(f"  Will compute: {K_to_compute}")
     else:
         logger.info(f"  --force-recompute: Computing all {len(K_to_compute)} K values")
-    
     # Step 3b: Load cached results
     rmse_results = []
-    
     if K_cached:
         logger.info(f"\n  Loading cached results...")
         for K in K_cached:
@@ -551,16 +548,11 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
                 logger.warning(f"    K={K}: ⚠ Failed to load cache: {e}")
                 logger.warning(f"             Adding back to computation queue...")
                 K_to_compute.append(K)  # Re-add to computation list
-    
     # Step 3c: Parallelize computation of remaining K values
     if K_to_compute:
         logger.info(f"\n  Computing CBPS for {len(K_to_compute)} K values in parallel...")
-        
-        # Determine number of parallel workers (limit to avoid overwhelming system)
-        n_workers = min(len(K_to_compute), max_workers)  # Don't spawn more workers than K values
+        n_workers = min(len(K_to_compute), max_workers)
         logger.info(f"  Using {n_workers} parallel workers")
-        
-        # Create partial function with common arguments bound
         compute_func = partial(
             compute_k_value,
             similarities=similarities,
@@ -569,26 +561,16 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             train_years=list(range(2000, 2011)),
             test_years=list(range(2011, 2016))
         )
-        
-        # Execute in parallel using ThreadPoolExecutor
-        # (Threads work well here since bottleneck is I/O-bound R subprocess calls)
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            # Submit all K values for computation
             future_to_k = {executor.submit(compute_func, K): K for K in K_to_compute}
-            
-            # Collect results as they complete
             completed = 0
             for future in as_completed(future_to_k):
                 K = future_to_k[future]
                 completed += 1
-                
                 try:
                     result = future.result()
-                    
                     if result['success']:
-                        # Extract metrics (exclude success/error flags)
-                        metrics = {k: v for k, v in result.items() 
-                                  if k not in ['success', 'error']}
+                        metrics = {k: v for k, v in result.items() if k not in ['success', 'error']}
                         rmse_results.append(metrics)
                         logger.info(f"    K={K}: ✓ RMSE={result['rmse']:.4f}, "
                                    f"balance={result['max_balance_std']:.3f} "
@@ -599,9 +581,7 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
                 except Exception as e:
                     logger.error(f"    K={K}: ✗ Exception: {e} "
                                 f"[{completed}/{len(K_to_compute)}]")
-        
         logger.info(f"  ✓ Parallel computation complete")
-    
     # Step 3d: Check if we have any results
     if not rmse_results:
         logger.error("\n" + "="*80)
@@ -614,10 +594,7 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         logger.error("  4. FIRMS.RDS missing or corrupted")
         logger.error("\nCheck R script output above for details.")
         return None    
-    
     rmse_df = pd.DataFrame(rmse_results)
-    
-    # Summary of what succeeded/failed
     logger.info(f"\n{'='*80}")
     logger.info(f"CBPS CROSS-VALIDATION SUMMARY")
     logger.info(f"{'='*80}")
@@ -679,8 +656,8 @@ Examples:
         '--k-values',
         type=int,
         nargs='+',
-        default=[10, 20, 30, 50, 75, 100],
-        help='K candidates to test (default: 10 20 30 50 75 100)'
+        default=[20, 30, 40, 50, 75, 100, 150, 200],
+        help='K candidates to test (default: 20 30 40 50 75 100 150 200)'
     )
     parser.add_argument(
         '--min-ratio',
@@ -785,12 +762,11 @@ Examples:
         logger.info(f"     (Delete this file to force recomputation)")    
     # Step 2-4: Select optimal K
     # K range justification:
-    #   - Lower bound (10): Minimum for statistical stability (K-NN standard)
-    #   - Upper bound (100): Practical limit before approaching full pool (due to union effect)
-    #   - Spacing: Dense at low K (10→20→30) where differences matter most
-    #              Sparse at high K (50→75→100) for diminishing returns
+    #   - Lower bound (20): Avoid degenerate weights and heavy regularization
+    #   - Upper bound (200): Allows for improved balance and ESS
+    #   - Spacing: Dense at low K (20→30→40→50), sparser at high K (75→100→150→200)
     # Union effect: K per treated × ~200 treated → ~5-10k unique controls after overlap
-    # Expected result: K ∈ [20, 50] after elbow + pool size filtering
+    # Expected result: K ∈ [30, 100] after pool size filtering and balance diagnostics
     K_candidates = args.k_values
     min_ratio = args.min_ratio    
     logger.info(f"K candidates: {K_candidates}")

@@ -420,34 +420,7 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 cat("\nOutput directory:", output_dir, "\n")
 
-# Generate and save trajectory plot (Phase 2 prep)
-cat("\nGenerating pre-treatment trajectory plot...\n")
-
-trajectory_data <- tryCatch(
-  {
-    plot_pretreatment_trajectory(
-      weights_df = weights_df,
-      train_start = train_start,
-      train_end = train_end,
-      test_start = test_start,
-      test_end = test_end,
-      output_path = paste0(output_dir, "trajectory_", output_prefix, "_", treated_year, ".png"),
-      treatment_year = treated_year,
-      firms_rds_path = "data/processed_data/FIRMS.RDS"
-    )
-  },
-  error = function(e) {
-    cat("⚠ WARNING: Trajectory plot failed:", e$message, "\n")
-    data.frame()
-  }
-)
-
-# Save trajectory data for later analysis
-if (nrow(trajectory_data) > 0) {
-  trajectory_path <- paste0(output_dir, "trajectory_data_", output_prefix, "_", treated_year, ".csv")
-  write.csv(trajectory_data, trajectory_path, row.names = FALSE)
-  cat("✓ Trajectory data saved to:", trajectory_path, "\n")
-}
+# (Trajectory plot generation removed; handled by plot_trajectory.R)
 
 # Create metrics table
 metrics_df <- data.frame(

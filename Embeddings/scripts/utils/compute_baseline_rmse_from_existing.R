@@ -71,9 +71,9 @@ fire_train <- df_freq %>%
 
 if (nrow(fire_train) > 0) {
   fire_train_wide <- fire_train %>%
-    select(year, treated, fire.frac) %>%
+    select(year, treated, hifire95.frac) %>%
     pivot_wider(names_from = treated, 
-                values_from = fire.frac, 
+                values_from = hifire95.frac, 
                 names_prefix = "treated_")
   
   # Fill NAs with 0
@@ -92,9 +92,9 @@ fire_test <- df_freq %>%
 
 if (nrow(fire_test) > 0) {
   fire_test_wide <- fire_test %>%
-    select(year, treated, fire.frac) %>%
+    select(year, treated, hifire95.frac) %>%
     pivot_wider(names_from = treated, 
-                values_from = fire.frac, 
+                values_from = hifire95.frac, 
                 names_prefix = "treated_")
   
   # Fill NAs with 0

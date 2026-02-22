@@ -31,16 +31,16 @@
 suppressPackageStartupMessages({
   library("dplyr")
   library("tidyr")
+  library("ggplot2")
+  library("data.table")
 })
-
-# Check for required packages
-if (!requireNamespace("sandwich", quietly = TRUE)) {
-  stop("Package 'sandwich' required. Install with: install.packages('sandwich')")
-}
-
 if (!requireNamespace("lmtest", quietly = TRUE)) {
-  stop("Package 'lmtest' required. Install with: install.packages('lmtest')")
+  install.packages("lmtest", repos = "https://cloud.r-project.org/")
 }
+if (!requireNamespace("sandwich", quietly = TRUE)) {
+  install.packages("sandwich", repos = "https://cloud.r-project.org/")
+}
+
 
 source("balancing/calculate_fire_outcomes.R")
 
@@ -124,7 +124,7 @@ cat("Working directory:", getwd(), "\n")
 cat("\n")
 
 # Setup output directory
-output_dir <- paste0("data/phase2_efficiency/", treated_year, "/")
+output_dir <- paste0("Embeddings/data/phase2_efficiency/", treated_year, "/")
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ============================================================================
@@ -136,24 +136,17 @@ cat("STEP 1: Loading CBPS weights\n")
 cat(strrep("=", 80), "\n")
 
 # Baseline weights (full pool)
-baseline_weights_file <- paste0("data/outputs/balance/cbps_weights_", treated_year, "_conifer.RDS")
+baseline_weights_file <- paste0("data/processed_data/rev_analysis_low/cbps_weights_", treated_year, "_conifer.RDS")
 
 cat("Loading baseline weights...\n")
 validate_file(baseline_weights_file, "Baseline CBPS weights")
 
-weights_baseline_list <- tryCatch({
+weights_baseline <- tryCatch({
   readRDS(baseline_weights_file)
 }, error = function(e) {
   stop_with_error("Failed to load baseline weights from %s\n  Error: %s", 
                  baseline_weights_file, e$message)
 })
-
-if (!("weights" %in% names(weights_baseline_list))) {
-  stop_with_error("Baseline weights file does not contain 'weights' component\n  File: %s", 
-                 baseline_weights_file)
-}
-
-weights_baseline <- weights_baseline_list$weights
 
 # Validate baseline weights structure
 required_cols <- c("unit", "treated", "weight")
@@ -167,8 +160,27 @@ cat("✓ Baseline weights loaded:", nrow(weights_baseline), "pixels\n")
 cat("  Treated:", sum(weights_baseline$treated), "\n")
 cat("  Control:", sum(weights_baseline$treated == 0), "\n")
 
+# Merge weights_baseline with FIRMS.RDS to get LATITUDE/LONGITUDE
+# Ensure weights_baseline has LATITUDE and LONGITUDE columns for merging with FIRMS.RDS
+if (!all(c("LATITUDE", "LONGITUDE") %in% names(weights_baseline))) {
+  # Try to merge with original covariate file to get coordinates
+  covariate_file <- paste0("data/processed_data/rev_analysis_low/analysis_treated", treated_year, "_conifer.RDS")
+  validate_file(covariate_file, "Covariate file for coordinates")
+  covariate_df <- tryCatch({
+    readRDS(covariate_file)
+  }, error = function(e) {
+    stop_with_error("Failed to load covariate file from %s\n  Error: %s", covariate_file, e$message)
+  })
+  # Merge by unit to add coordinates
+  weights_baseline <- weights_baseline %>%
+    left_join(covariate_df %>% select(unit, LATITUDE, LONGITUDE), by = "unit")
+  if (!all(c("LATITUDE", "LONGITUDE") %in% names(weights_baseline))) {
+    stop_with_error("Could not add LATITUDE/LONGITUDE to baseline weights. Check covariate file structure.")
+  }
+}
+
 # Embedding weights (filtered pool)
-embedding_weights_file <- paste0("data/cbps_integration/", treated_year, 
+embedding_weights_file <- paste0("Embeddings/data/cbps_integration/", treated_year, 
                                 "/cbps_weights_full_k", optimal_K, "_", treated_year, ".csv")
 
 cat("\nLoading embedding weights...\n")
