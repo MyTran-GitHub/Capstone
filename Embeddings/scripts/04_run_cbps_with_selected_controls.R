@@ -400,6 +400,14 @@ rmse_result <- tryCatch(
   }
 )
 
+# Diagnostic: Print which outcome variable is used for RMSE and show first few values
+if (!is.null(rmse_result$fire_freq_data) && "hifire95.frac" %in% names(rmse_result$fire_freq_data)) {
+  cat("[DIAGNOSTIC] Outcome variable used for RMSE: hifire95.frac\n")
+  cat("[DIAGNOSTIC] First 10 values of hifire95.frac:\n")
+  print(head(rmse_result$fire_freq_data$hifire95.frac, 10))
+} else {
+  cat("[DIAGNOSTIC] hifire95.frac not found in fire_freq_data.\n")
+}
 rmse_train <- rmse_result$rmse_train
 rmse_test <- rmse_result$rmse_test
 
@@ -410,8 +418,8 @@ if (!is.na(rmse_train) && !is.na(rmse_test)) {
   cat("⚠ Using covariate balance proxy for RMSE\n")
 }
 
-cat("Train RMSE (fire frequency):", round(rmse_train, 4), "\n")
-cat("Test RMSE (fire frequency):", round(rmse_test, 4), "\n")
+cat("Train RMSE (high-intensity fire, hifire95.frac):", round(rmse_train, 4), "\n")
+cat("Test RMSE (high-intensity fire, hifire95.frac):", round(rmse_test, 4), "\n")
 
 # Create year-specific output directory
 output_base_dir <- "Embeddings/data/cbps_integration/"

@@ -37,7 +37,17 @@ calculate_fire_frequency <- function(weights_df,
   print(str(weights_df))
   cat("\n--- DIAGNOSTICS: firms_base structure ---\n")
   # Load FIRMS fire data
+  if (!file.exists(firms_rds_path)) {
+    stop(paste("FIRMS data not found:", firms_rds_path))
+  }
   firms_base <- readRDS(firms_rds_path)
+  # Fix: Drop geometry column and convert sf to data.frame if needed
+  if (inherits(firms_base, "sf")) {
+    firms_base <- as.data.frame(firms_base)
+  }
+  if ("geometry" %in% colnames(firms_base)) {
+    firms_base$geometry <- NULL
+  }
   print(str(firms_base))
   cat("\n--- DIAGNOSTICS: head(weights_df) ---\n")
   print(head(weights_df, 10))
@@ -46,6 +56,8 @@ calculate_fire_frequency <- function(weights_df,
 
   firms_base$unit <- paste0(firms_base$LATITUDE, firms_base$LONGITUDE)
   firms_base$has.fire <- 1
+  firms_base$has.hifire95 <- as.integer(firms_base$max_FRP >= 1000)
+  firms_base$has.hifire90 <- as.integer(firms_base$max_FRP >= 500)
 
   # Extract control and treated units (matching weighted_outcome_analysis.R lines 47-48)
   control_units <- weights_df$unit[weights_df$treated == 0]
@@ -56,41 +68,26 @@ calculate_fire_frequency <- function(weights_df,
                  weights_df[, c("LATITUDE", "LONGITUDE", "weight")],
                  by = c("LATITUDE", "LONGITUDE"),
                  all.x = TRUE)
-
+  # After merging, create high-intensity fire indicators
+  firms$has.hifire95 <- 0
+  firms$has.hifire90 <- 0
+  firms$has.hifire95[!is.na(firms$max_FRP) & firms$max_FRP >= 1000] <- 1
+  firms$has.hifire90[!is.na(firms$max_FRP) & firms$max_FRP >= 500] <- 1
   # DIAGNOSTICS: Print structure after merge
   cat("\n--- DIAGNOSTICS: merged firms structure ---\n")
   print(str(firms))
   cat("\n--- DIAGNOSTICS: head(merged firms) ---\n")
   print(head(firms, 10))
-  
+
   if (!requireNamespace("dplyr", quietly = TRUE)) {
     stop("Package 'dplyr' required")
   }
-  
-  if (!file.exists(firms_rds_path)) {
-    stop(paste("FIRMS data not found:", firms_rds_path))
-  }
-  
-  # Load FIRMS fire data
-  firms_base <- readRDS(firms_rds_path)
-  firms_base$unit <- paste0(firms_base$LATITUDE, firms_base$LONGITUDE)
-  firms_base$has.fire <- 1
-  
-  # Extract control and treated units (matching weighted_outcome_analysis.R lines 47-48)
-  control_units <- weights_df$unit[weights_df$treated == 0]
-  treated_units <- weights_df$unit[weights_df$treated == 1]
-  
-  # Merge FIRMS with weights by coordinates (matching line 49-51)
-  firms <- merge(firms_base,
-                 weights_df[, c("LATITUDE", "LONGITUDE", "weight")],
-                 by = c("LATITUDE", "LONGITUDE"),
-                 all.x = TRUE)
-  
+
   # Filter to study units and assign treated status (matching lines 53-55)
   firms <- firms[firms$unit %in% c(control_units, treated_units), ]
   firms$treated <- 0
   firms$treated[firms$unit %in% treated_units] <- 1
-  
+
   # Filter to specified years if provided
   if (!is.null(years_to_include)) {
     firms <- firms[firms$year %in% years_to_include, ]
@@ -121,8 +118,9 @@ calculate_fire_frequency <- function(weights_df,
   
   # Merge fire data with panel (all.x = TRUE keeps all panel rows)
   # Matching lines 70-79 of weighted_outcome_analysis.R
+  # Include all relevant fire intensity columns for downstream hifire95.frac, hifire90.frac, etc.
   df_final <- merge(df_panel,
-                    firms[, c("year", "unit", "has.fire", "treated")],
+                    firms[, c("year", "unit", "has.fire", "avg_BRIGHTNESS", "max_FRP", "treated", "has.hifire95", "has.hifire90")],
                     by = c("year", "unit"),
                     all.x = TRUE)
   
@@ -148,18 +146,26 @@ calculate_fire_frequency <- function(weights_df,
     ))
   }
   
-  # Calculate weighted fire frequency (matching lines 81-92)
+  # Calculate weighted fire frequency and high-intensity fire frequency (matching lines 81-92)
   df_final$weight.fire <- df_final$has.fire * df_final$weight
-  
+  df_final$weight.hifire95 <- df_final$has.hifire95 * df_final$weight
+  df_final$weight.hifire90 <- df_final$has.hifire90 * df_final$weight
+
   fire_freq <- df_final %>%
     dplyr::group_by(year, treated) %>%
     dplyr::summarise(
       sum.fire = sum(weight.fire, na.rm = TRUE),
+      sum.hifire95 = sum(weight.hifire95, na.rm = TRUE),
+      sum.hifire90 = sum(weight.hifire90, na.rm = TRUE),
       denom = sum(weight, na.rm = TRUE),  # Now includes ALL units, not just those with fires
       .groups = "drop"
     ) %>%
-    dplyr::mutate(fire.frac = ifelse(denom == 0, NA_real_, sum.fire / denom))
-  
+    dplyr::mutate(
+      fire.frac = ifelse(denom == 0, NA_real_, sum.fire / denom),
+      hifire95.frac = ifelse(denom == 0, NA_real_, sum.hifire95 / denom),
+      hifire90.frac = ifelse(denom == 0, NA_real_, sum.hifire90 / denom)
+    )
+
   return(fire_freq)
 }
 
@@ -207,13 +213,13 @@ calculate_pretreatment_rmse <- function(weights_df,
     ))
   }
   
-  # Compute RMSE for training period
+  # Compute RMSE for training period (using hifire95.frac)
   fire_train <- fire_freq[fire_freq$year %in% train_years_vec, ]
   
   if (nrow(fire_train) > 0) {
     fire_train_wide <- fire_train %>%
-      dplyr::select(year, treated, fire.frac) %>%
-      tidyr::pivot_wider(names_from = treated, values_from = fire.frac, names_prefix = "treated_")
+      dplyr::select(year, treated, hifire95.frac) %>%
+      tidyr::pivot_wider(names_from = treated, values_from = hifire95.frac, names_prefix = "treated_")
     
     fire_train_wide$treated_0[is.na(fire_train_wide$treated_0)] <- 0
     fire_train_wide$treated_1[is.na(fire_train_wide$treated_1)] <- 0
@@ -223,13 +229,13 @@ calculate_pretreatment_rmse <- function(weights_df,
     rmse_train <- NA_real_
   }
   
-  # Compute RMSE for test period
+  # Compute RMSE for test period (using hifire95.frac)
   fire_test <- fire_freq[fire_freq$year %in% test_years_vec, ]
   
   if (nrow(fire_test) > 0) {
     fire_test_wide <- fire_test %>%
-      dplyr::select(year, treated, fire.frac) %>%
-      tidyr::pivot_wider(names_from = treated, values_from = fire.frac, names_prefix = "treated_")
+      dplyr::select(year, treated, hifire95.frac) %>%
+      tidyr::pivot_wider(names_from = treated, values_from = hifire95.frac, names_prefix = "treated_")
     
     fire_test_wide$treated_0[is.na(fire_test_wide$treated_0)] <- 0
     fire_test_wide$treated_1[is.na(fire_test_wide$treated_1)] <- 0

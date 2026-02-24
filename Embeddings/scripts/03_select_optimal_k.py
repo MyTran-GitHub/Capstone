@@ -505,6 +505,14 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
 
     # Step 3: Run CBPS + RMSPE cross-validation
     from config import CBPS_INTEGRATION_DIR
+    # If force_recompute, delete all cached CBPS metrics files for this year/K
+    if force_recompute:
+        for K in K_candidates:
+            output_prefix = f"k{K}"
+            metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+            if metrics_file.exists():
+                logger.info(f"🗑️  Deleting cached CBPS metrics for K={K} (--force-recompute)")
+                metrics_file.unlink()
     K_to_compute = []
     K_cached = []
     for K in valid_K:
