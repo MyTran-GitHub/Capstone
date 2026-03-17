@@ -1,4 +1,4 @@
-dlibrary(fst)
+library(fst)
 library(sf)
 library(tidyverse)
 
@@ -42,34 +42,48 @@ df <- fveg_grid_ca[,c("LONGITUDE", "LATITUDE")]
 df$unit <- paste0(df$LATITUDE, df$LONGITUDE)
 
 # For each grid, assign yearly historical fire information
-Q <- list()
-for (j in 2000:2021) {
-    p <- subset(fire.df, year == j)
-    p.u <- unique(p[c("unit")])
-    index <- match(p.u$unit, p$unit)
-    fire <- table(p$unit)
-    fire <- as.numeric(fire)
-    p.new <- cbind(p[index, ], fire)
-    Q <- append(Q, list(p.new))
+## Aggregate events to per-unit, per-year statistics
+# compute: n_events, avg_BRIGHTNESS (mean), max_FRP (max)
+agg <- fire.df %>%
+  group_by(unit, year) %>%
+  summarise(
+    n_events = n(),
+    # Use 0 when intensity is unavailable so no-fire/no-signal years do not propagate NAs.
+    avg_BRIGHTNESS = if (all(is.na(avg_BRIGHTNESS))) 0 else mean(avg_BRIGHTNESS, na.rm = TRUE),
+    max_FRP = if (all(is.na(max_FRP))) 0 else max(max_FRP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# create year-variable columns for 2000:2021 initialized to 0
+years <- 2000:2021
+for (y in years) {
+  df[[paste0("fire_", y)]] <- 0
+  df[[paste0("avg_BRIGHTNESS_", y)]] <- 0
+  df[[paste0("max_FRP_", y)]] <- 0
 }
-fire.df.new <- do.call(rbind, Q)
 
-var <- c("fire", "avg_BRIGHTNESS", "max_FRP")
-parameters <- expand.grid(2000:2021, var)
-
-for (par in seq_len(nrow(parameters))) {
-  dfn <- data.frame(matrix(0, nrow = nrow(df), ncol = 1))
-  colnames(dfn) <- paste0(parameters[par, 2], "_", parameters[par, 1])
-  df <- cbind(df, dfn)
+# fill aggregated values into df
+for (r in seq_len(nrow(agg))) {
+  row <- agg[r, ]
+  unit_idx <- which(df$unit == row$unit)
+  if (length(unit_idx) == 0) next
+  y <- as.character(row$year)
+  # presence indicator
+  df[unit_idx, paste0("fire_", y)] <- as.integer(row$n_events > 0)
+  # intensity fields: keep 0 as no-fire/no-signal encoding to avoid downstream NA handling issues.
+  df[unit_idx, paste0("avg_BRIGHTNESS_", y)] <- ifelse(is.na(row$avg_BRIGHTNESS), 0, row$avg_BRIGHTNESS)
+  df[unit_idx, paste0("max_FRP_", y)] <- ifelse(is.na(row$max_FRP), 0, row$max_FRP)
 }
 
-for (j in 2000:2021) {
-  p <- subset(fire.df.new, year == j)
-  index <- match(p$unit, df$unit)
-  df[index, paste0("fire_", j)] <- 1
-  for (i in seq_len(length(index))) {
-    df[index[i], paste0("avg_BRIGHTNESS_", j)] <- p$avg_BRIGHTNESS[i]
-    df[index[i], paste0("max_FRP_", j)] <- p$max_FRP[i]
+# Enforce consistency: if no fire in a year, intensity variables must be 0.
+for (y in years) {
+  fire_col <- paste0("fire_", y)
+  b_col <- paste0("avg_BRIGHTNESS_", y)
+  f_col <- paste0("max_FRP_", y)
+  no_fire_idx <- which(df[[fire_col]] == 0)
+  if (length(no_fire_idx) > 0) {
+    df[no_fire_idx, b_col] <- 0
+    df[no_fire_idx, f_col] <- 0
   }
 }
 

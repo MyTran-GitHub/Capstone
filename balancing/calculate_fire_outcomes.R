@@ -43,10 +43,22 @@ calculate_fire_frequency <- function(weights_df,
   firms_base <- readRDS(firms_rds_path)
   # Fix: Drop geometry column and convert sf to data.frame if needed
   if (inherits(firms_base, "sf")) {
-    firms_base <- as.data.frame(firms_base)
+    if (requireNamespace("sf", quietly = TRUE)) {
+      coords_try <- try(sf::st_coordinates(firms_base), silent = TRUE)
+      if (!inherits(coords_try, "try-error") && is.matrix(coords_try) && ncol(coords_try) >= 2) {
+        # st_coordinates returns X = LONG, Y = LAT
+        if (!"LONGITUDE" %in% colnames(firms_base)) firms_base$LONGITUDE <- coords_try[,1]
+        if (!"LATITUDE" %in% colnames(firms_base)) firms_base$LATITUDE <- coords_try[,2]
+      }
+      firms_base <- sf::st_drop_geometry(firms_base)
+    } else {
+      firms_base <- as.data.frame(firms_base)
+    }
   }
-  if ("geometry" %in% colnames(firms_base)) {
-    firms_base$geometry <- NULL
+  # Remove any remaining sfc or list-like geometry columns
+  is_sfc_like <- sapply(firms_base, function(col) inherits(col, "sfc") || any(grepl("sfc", class(col), fixed = TRUE)) || is.list(col))
+  if (any(is_sfc_like)) {
+    firms_base <- firms_base[, !is_sfc_like, drop = FALSE]
   }
   print(str(firms_base))
   cat("\n--- DIAGNOSTICS: head(weights_df) ---\n")
@@ -58,6 +70,32 @@ calculate_fire_frequency <- function(weights_df,
   firms_base$has.fire <- 1
   firms_base$has.hifire95 <- as.integer(firms_base$max_FRP >= 1000)
   firms_base$has.hifire90 <- as.integer(firms_base$max_FRP >= 500)
+
+    # Ensure weights_df contains unit and LAT/LONG coordinates for merging
+    if (!('unit' %in% names(weights_df))) {
+      if ('LATITUDE' %in% names(weights_df) && 'LONGITUDE' %in% names(weights_df)) {
+        weights_df$unit <- paste0(weights_df$LATITUDE, weights_df$LONGITUDE)
+      } else {
+        stop('weights_df must contain either `unit` or both `LATITUDE` and `LONGITUDE`')
+      }
+    }
+    # If LAT/LONG missing but unit present, try to parse unit string "lat<sep>long" where long begins with a minus sign
+    if (!('LATITUDE' %in% names(weights_df) && 'LONGITUDE' %in% names(weights_df))) {
+      if ('unit' %in% names(weights_df)) {
+        parsed <- do.call(rbind, lapply(as.character(weights_df$unit), function(u) {
+          m <- regexpr('-[0-9]+\\.?[0-9]*$', u)
+          if (m[1] > 1) {
+            lon <- substring(u, m[1])
+            lat <- substring(u, 1, m[1]-1)
+          } else {
+            lat <- NA; lon <- NA
+          }
+          c(lat, lon)
+        }))
+        weights_df$LATITUDE <- as.numeric(parsed[,1])
+        weights_df$LONGITUDE <- as.numeric(parsed[,2])
+      }
+    }
 
   # Extract control and treated units (matching weighted_outcome_analysis.R lines 47-48)
   control_units <- weights_df$unit[weights_df$treated == 0]
@@ -216,15 +254,32 @@ calculate_pretreatment_rmse <- function(weights_df,
   # Compute RMSE for training period (using hifire95.frac)
   fire_train <- fire_freq[fire_freq$year %in% train_years_vec, ]
   
+  n_years_used_train <- 0
+  rmse_train <- NA_real_
+  rmse_train_norm <- NA_real_
   if (nrow(fire_train) > 0) {
     fire_train_wide <- fire_train %>%
       dplyr::select(year, treated, hifire95.frac) %>%
       tidyr::pivot_wider(names_from = treated, values_from = hifire95.frac, names_prefix = "treated_")
-    
-    fire_train_wide$treated_0[is.na(fire_train_wide$treated_0)] <- 0
-    fire_train_wide$treated_1[is.na(fire_train_wide$treated_1)] <- 0
-    
-    rmse_train <- sqrt(mean((fire_train_wide$treated_1 - fire_train_wide$treated_0)^2, na.rm = TRUE))
+
+    # Compute RMSE only on years where both treated and control group values are present
+    valid_idx_train <- which(!is.na(fire_train_wide$treated_1) & !is.na(fire_train_wide$treated_0))
+    n_years_used_train <- length(valid_idx_train)
+    if (n_years_used_train == 0) {
+      rmse_train <- NA_real_
+      rmse_train_norm <- NA_real_
+      warning('No overlapping years with non-missing treated and control values for RMSE (train)')
+    } else {
+      diffs_train <- fire_train_wide$treated_1[valid_idx_train] - fire_train_wide$treated_0[valid_idx_train]
+      rmse_train <- sqrt(mean(diffs_train^2, na.rm = TRUE))
+      # normalized RMSE relative to mean treated outcome magnitude
+      mean_treated_train <- mean(fire_train_wide$treated_1[valid_idx_train], na.rm = TRUE)
+      if (is.na(mean_treated_train) || mean_treated_train == 0) {
+        rmse_train_norm <- NA_real_
+      } else {
+        rmse_train_norm <- rmse_train / abs(mean_treated_train)
+      }
+    }
   } else {
     rmse_train <- NA_real_
   }
@@ -232,15 +287,31 @@ calculate_pretreatment_rmse <- function(weights_df,
   # Compute RMSE for test period (using hifire95.frac)
   fire_test <- fire_freq[fire_freq$year %in% test_years_vec, ]
   
+  n_years_used_test <- 0
+  rmse_test <- NA_real_
+  rmse_test_norm <- NA_real_
   if (nrow(fire_test) > 0) {
     fire_test_wide <- fire_test %>%
       dplyr::select(year, treated, hifire95.frac) %>%
       tidyr::pivot_wider(names_from = treated, values_from = hifire95.frac, names_prefix = "treated_")
-    
-    fire_test_wide$treated_0[is.na(fire_test_wide$treated_0)] <- 0
-    fire_test_wide$treated_1[is.na(fire_test_wide$treated_1)] <- 0
-    
-    rmse_test <- sqrt(mean((fire_test_wide$treated_1 - fire_test_wide$treated_0)^2, na.rm = TRUE))
+
+    # Compute RMSE only on years where both treated and control group values are present
+    valid_idx_test <- which(!is.na(fire_test_wide$treated_1) & !is.na(fire_test_wide$treated_0))
+    n_years_used_test <- length(valid_idx_test)
+    if (n_years_used_test == 0) {
+      rmse_test <- NA_real_
+      rmse_test_norm <- NA_real_
+      warning('No overlapping years with non-missing treated and control values for RMSE (test)')
+    } else {
+      diffs_test <- fire_test_wide$treated_1[valid_idx_test] - fire_test_wide$treated_0[valid_idx_test]
+      rmse_test <- sqrt(mean(diffs_test^2, na.rm = TRUE))
+      mean_treated_test <- mean(fire_test_wide$treated_1[valid_idx_test], na.rm = TRUE)
+      if (is.na(mean_treated_test) || mean_treated_test == 0) {
+        rmse_test_norm <- NA_real_
+      } else {
+        rmse_test_norm <- rmse_test / abs(mean_treated_test)
+      }
+    }
   } else {
     rmse_test <- NA_real_
   }
@@ -248,6 +319,10 @@ calculate_pretreatment_rmse <- function(weights_df,
   return(list(
     rmse_train = rmse_train,
     rmse_test = rmse_test,
+    rmse_train_norm = rmse_train_norm,
+    rmse_test_norm = rmse_test_norm,
+    n_years_used_train = n_years_used_train,
+    n_years_used_test = n_years_used_test,
     fire_freq_data = fire_freq
   ))
 }
@@ -384,12 +459,159 @@ plot_pretreatment_trajectory <- function(weights_df,
   return(fire_wide)
 }
 
+
+#' Pooled jackknife estimator for ratio ATT (adapted from analysis/fire_regression_lag.R)
+#'
+#' Computes a pooled (cohort-pooled across years) ratio estimator of treated vs control
+#' outcomes using a leave-one-year-out jackknife to estimate variance. Returns a
+#' relative-risk-style ratio with jackknife standard error and CI.
+#'
+compute_pooled_jackknife_att <- function(weights_df,
+                                         outcome_years,
+                                         outcome_var = "hifire95.frac",
+                                         firms_rds_path = "data/processed_data/FIRMS.RDS",
+                                         alpha = 0.05) {
+  # Build per-year treated/control outcome table using existing helper
+  fire_freq <- calculate_fire_frequency(
+    weights_df = weights_df,
+    firms_rds_path = firms_rds_path,
+    years_to_include = outcome_years
+  )
+
+  if (nrow(fire_freq) == 0) stop("No fire-frequency data available for pooled jackknife")
+
+  years_present <- sort(unique(fire_freq$year))
+  raw.plot <- data.frame(Year = years_present,
+                         ratio = NA_real_,
+                         Baseline = NA_real_)
+
+  for (i in seq_along(years_present)) {
+    yr <- years_present[i]
+    sub <- fire_freq[fire_freq$year == yr, ]
+    treated_val <- sub[[outcome_var]][sub$treated == 1]
+    control_val <- sub[[outcome_var]][sub$treated == 0]
+
+    if (length(treated_val) == 0 || length(control_val) == 0 || is.na(treated_val) || is.na(control_val) || control_val == 0) {
+      raw.plot$ratio[i] <- NA_real_
+      raw.plot$Baseline[i] <- NA_real_
+    } else {
+      raw.plot$ratio[i] <- treated_val / control_val
+      raw.plot$Baseline[i] <- control_val
+    }
+  }
+
+  raw.plot <- raw.plot[!is.na(raw.plot$ratio), , drop = FALSE]
+  if (nrow(raw.plot) == 0) stop("No valid years with both treated and control outcomes for pooled jackknife")
+
+  jackfun <- function(end.years) {
+    jack.data <- subset(raw.plot, Year %in% end.years)
+    reg.jack <- stats::glm(ratio ~ 1, family = quasipoisson, weights = Baseline, data = jack.data)
+    as.numeric(coef(reg.jack)[1])
+  }
+
+  full.reg <- jackfun(unique(raw.plot$Year))
+  yrs <- unique(raw.plot$Year)
+  jackreps <- sapply(yrs, function(yy) jackfun(setdiff(yrs, yy)))
+
+  # Jackknife variance (standard leave-one-out jackknife variance formula)
+  n <- length(jackreps)
+  jackvar <- var(jackreps) * (n - 1)^2 / n
+  jackse <- sqrt(jackvar)
+
+  rat <- exp(full.reg)
+  zcrit <- qnorm(1 - alpha / 2)
+  ub <- exp(full.reg + zcrit * jackse)
+  lb <- exp(full.reg - zcrit * jackse)
+
+  data.frame(
+    method = "pooled_jackknife",
+    att_ratio = rat,
+    se = jackse,
+    ci_lower = lb,
+    ci_upper = ub,
+    n_years = nrow(raw.plot),
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Embedding-weighted cohort-pooled per-lag estimator
+#'
+#' Computes per-lag pooled jackknife estimates using user-supplied weights.
+#' This reproduces the jackknife + quasi-Poisson regression logic from
+#' `analysis/fire_regression_lag.R::compute_results()` but sources outcomes
+#' from `calculate_fire_frequency()` using the provided `weights_df`.
+compute_pooled_jackknife_per_lag_weights <- function(weights_df,
+                                                     focal_years,
+                                                     outcome_var = "hifire95.frac",
+                                                     ci_type = "two") {
+  all.lags <- 1:9
+  all.end.years <- 2009:2021
+
+  raw.plot <- expand.grid(Year = all.end.years, Lag = all.lags)
+  raw.plot$ratio <- NA_real_
+  raw.plot$Baseline <- NA_real_
+
+  for (i in seq_len(nrow(raw.plot))) {
+    YYY <- raw.plot$Year[i]
+    LLL <- raw.plot$Lag[i]
+    start_year <- YYY - LLL
+    if (!(start_year %in% focal_years)) next
+
+    ff <- tryCatch(
+      calculate_fire_frequency(weights_df = weights_df, years_to_include = start_year),
+      error = function(e) NULL
+    )
+    if (is.null(ff) || nrow(ff) == 0) next
+
+    treated_val <- ff[[outcome_var]][ff$treated == 1]
+    control_val <- ff[[outcome_var]][ff$treated == 0]
+    if (length(treated_val) == 0 || length(control_val) == 0 || is.na(treated_val) || is.na(control_val) || control_val == 0) {
+      next
+    }
+
+    raw.plot$ratio[i] <- treated_val / control_val
+    raw.plot$Baseline[i] <- control_val
+  }
+
+  raw.plot <- subset(raw.plot, !is.na(ratio))
+  if (nrow(raw.plot) == 0) stop("No valid years with both treated and control outcomes for pooled jackknife (weights)")
+
+  jackfun <- function(end.years) {
+    jack.data <- subset(raw.plot, Year %in% end.years)
+    reg.jack <- glm(ratio ~ Lag, family = quasipoisson, weights = Baseline, data = jack.data)
+    coef(reg.jack)[1] + all.lags * coef(reg.jack)[2]
+  }
+
+  full.reg <- jackfun(unique(raw.plot$Year))
+  yrs <- unique(raw.plot$Year)
+  jackreps <- t(sapply(yrs, function(yy) jackfun(setdiff(yrs, yy))))
+
+  colnames(jackreps) <- all.lags
+  jackvar <- apply(jackreps, 2, function(xx) var(xx) * (length(xx) - 1)^2 / length(xx))
+  jackse <- sqrt(jackvar)
+
+  rat <- exp(full.reg)
+  if (ci_type == "two") {
+    ub <- exp(full.reg + qnorm(0.975) * jackse)
+    lb <- exp(full.reg - qnorm(0.975) * jackse)
+  } else {
+    ub <- exp(full.reg + qnorm(0.95) * jackse)
+    lb <- exp(full.reg - 1000 * jackse)
+  }
+
+  data.frame(year = 1:length(rat), rate = rat, lower = lb, upper = ub)
+}
+
+
+
+
 estimate_att_with_ci <- function(weights_df,
                                  outcome_years,
                                  treatment_year,
                                  firms_rds_path = "data/processed_data/FIRMS.RDS",
                                  cluster_by_unit = TRUE,
-                                 alpha = 0.05) {
+                                 alpha = 0.05,
+                                 method = c("per_year", "pooled_jackknife_per_lag", "pooled_jackknife")) {
   #' Estimate ATT with confidence intervals
   #' 
   #' Computes Average Treatment Effect on the Treated with robust/clustered standard errors:
@@ -439,6 +661,33 @@ estimate_att_with_ci <- function(weights_df,
   # Count units
   n_treated <- sum(weights_df$treated == 1)
   n_control <- sum(weights_df$treated == 0)
+
+  method <- match.arg(method)
+  if (method == "pooled_jackknife_per_lag") {
+    # Reuse the analysis script's pooled per-lag estimator
+    res <- compute_pooled_jackknife_per_lag(focal_years = outcome_years,
+                                            outcome_var = "hifire95.frac",
+                                            ci_type = ifelse(alpha == 0.05, "two", "one"))
+
+    # res has columns: year (lag index), rate, lower, upper
+    zcrit <- qnorm(1 - alpha / 2)
+    se_log <- (log(res$upper) - log(res$lower)) / (2 * zcrit)
+
+    results_df <- data.frame(
+      year = res$year,
+      method = "pooled_jackknife_per_lag",
+      att = res$rate,
+      se = se_log,
+      ci_lower = res$lower,
+      ci_upper = res$upper,
+      ci_width = res$upper - res$lower,
+      n_treated = n_treated,
+      n_control = n_control,
+      stringsAsFactors = FALSE
+    )
+    cat("✓ Computed pooled jackknife per-lag ATT (ratio) via analysis/fire_regression_lag.R\n")
+    return(results_df)
+  }
   
   # Merge weights with fire frequency for regression
   fire_freq_with_weights <- merge(

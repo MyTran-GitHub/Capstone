@@ -2,18 +2,69 @@
 ## Apply synthetic control approach via covariate balancing (Imai 2014, Zhao 2019, Tan 2020)
 ## Calculate ATT weights for each unit (conifer area only, focal years 2005:2020)
 ##
-## Note: SWE uses a two-part representation (presence + log-intensity). max_FRP, prcp, and
-## avg_BRIGHTNESS are log1p winsorized to reduce extreme tails while preserving ordering.
+## Note: SWE uses a two-part representation (presence + log-intensity).
+## max_FRP and prcp are log1p-winsorized; avg_BRIGHTNESS columns are dropped when `fire_*` exist.
 library("sf")
 
 source("balancing/cbps_ATT.R")
+source("balancing/cbps_lambda_utils.R")
+source("balancing/balancing_config.R")
+get_diagnostics_config <- get("get_diagnostics_config", mode = "function")
+source("balancing/prepare_cbps_design.R")
+source("diagnostics/diagnostics_scripts/covariates/run_covariate_exploration.R")
+
+
+if (!exists('SKIP_IMPLEMENT_CBPS_MAIN') || !SKIP_IMPLEMENT_CBPS_MAIN) {
+
+parse_flag_value <- function(args, flag, default = NULL) {
+  # Supports both: --flag=value and --flag value
+  flag_eq <- paste0(flag, "=")
+  hit_eq <- args[startsWith(args, flag_eq)]
+  if (length(hit_eq) > 0) return(sub(flag_eq, "", hit_eq[1], fixed = TRUE))
+  idx <- which(args == flag)
+  if (length(idx) > 0 && idx[1] < length(args)) return(args[idx[1] + 1])
+  default
+}
+
+parse_bool_flag <- function(x, default = FALSE) {
+  if (is.null(x) || length(x) == 0 || is.na(x)) return(default)
+  lx <- tolower(as.character(x)[1])
+  if (lx %in% c("1", "true", "t", "yes", "y")) return(TRUE)
+  if (lx %in% c("0", "false", "f", "no", "n")) return(FALSE)
+  default
+}
+
+cli_args <- commandArgs(trailingOnly = TRUE)
+area <- parse_flag_value(cli_args, "--area", "conifer")
+years_arg <- parse_flag_value(cli_args, "--years", NULL)
+diag_out_dir <- parse_flag_value(
+  cli_args,
+  "--covariate-diagnostics-dir",
+  "diagnostics/diagnostics_results/covariates"
+)
+
+record_covariate_diagnostics <- parse_bool_flag(
+  parse_flag_value(cli_args, "--record-covariate-diagnostics", NULL),
+  FALSE
+)
+if (exists("RECORD_COVARIATE_DIAGNOSTICS")) {
+  record_covariate_diagnostics <- isTRUE(RECORD_COVARIATE_DIAGNOSTICS)
+}
 
 outDir <- "data/processed_data/rev_analysis_low/"
-
-years <- 2005:2020  # Focal treatment years with sufficient pre-treatment data
+#years <- 2005:2020  # Focal treatment years with sufficient pre-treatment data
+years <- 2019  # Temporarily run dry-run for 2019 only
+if (!is.null(years_arg)) {
+  years <- as.integer(strsplit(years_arg, ",", fixed = TRUE)[[1]])
+}
 
 for (treated.year in years) {
-  input_file <- paste0(outDir, "analysis_treated", treated.year, "_conifer.RDS")
+  input_file <- paste0(outDir, "analysis_treated", treated.year, "_", area, ".RDS")
+
+  # Reset per-year state to avoid leaking prior loop values.
+  res <- NULL
+  rho <- NA_real_
+  cand_df <- NULL
   
   cat("Processing year:", treated.year, "\n")
   
@@ -23,161 +74,120 @@ for (treated.year in years) {
   }
   
   df <- readRDS(input_file)
-  W <- df$treated
+  cfg <- get_diagnostics_config()
+  # Use canonical preprocessing function to prepare design matrix
+  prep <- prepare_cbps_design(df, opts = list(default_winsor_p = cfg$preprocessing$default_winsor_p))
+  W <- prep$W
+  X <- prep$X
+  X.scl <- prep$X.scl
 
-  # Only keep covariates that aim to balance
-  X <- df
-  X$unit <- NULL
-  X$LATITUDE <- NULL
-  X$LONGITUDE <- NULL
-  X$treated <- NULL
-  X$num.fire <- NULL
+  # ------------------------------------------------------------------
+  # Lambda grid search + selection
+  n_ctrl <- sum(W == 0)
 
-  # Remove any non-numeric columns
-  X <- X[, sapply(X, is.numeric), drop = FALSE]
-  # Remove zero-variance columns (e.g., conifer)
-  X <- X[, apply(X, 2, sd, na.rm=TRUE) > 0, drop = FALSE]
+  # First-pass grid (user-requested): very coarse but includes small values
+  lambda_grid <- make_very_coarse_lambda_grid()
+  cat('  Using initial lambda grid:', paste(lambda_grid, collapse=','), '\n')
+  candidates <- list()
+  fit_by_lambda <- list()
+  theta_start <- rep(0, ncol(X.scl) + 1)
 
- 
-  # Two-part SWE: presence indicator + log-intensity (winsorized)
-  swe_cols <- grep("^swe_", colnames(X), value = TRUE)
-  if (length(swe_cols) > 0) {
-    cols_to_remove <- c()
-    cols_converted <- 0
-
-    for (col in swe_cols) {
-      x <- X[[col]]
-      pct_zero <- sum(x == 0 | is.na(x), na.rm = TRUE) / length(x)
-
-      # If >95% zero, remove entirely (no discriminatory power for covariate balance)
-      if (pct_zero > 0.95) {
-        cols_to_remove <- c(cols_to_remove, col)
-      } else {
-        X[[paste0(col, "_present")]] <- as.numeric(x > 0)
-
-        x_pos <- ifelse(x > 0, log1p(x), 0)
-        pos_vals <- x_pos[x_pos > 0]
-        if (length(pos_vals) > 0) {
-          p995 <- quantile(pos_vals, 0.995, na.rm = TRUE)
-          if (!is.na(p995)) {
-            x_pos[x_pos > p995] <- p995
-          }
-        }
-
-        X[[col]] <- x_pos
-        cols_converted <- cols_converted + 1
-      }
-    }
-
-    if (length(cols_to_remove) > 0) {
-      X <- X[, !colnames(X) %in% cols_to_remove]
-      cat("  Removed", length(cols_to_remove), "sparse SWE columns (>95% zero)\n")
-    }
-
-    if (cols_converted > 0) {
-      cat("  SWE two-part: converted", cols_converted, "columns (presence + log-intensity)\n")
-    }
-  }
-
-  # Log1p + winsorize max_FRP_* to preserve intensity ordering and reduce tail risk
-  frp_cols <- grep("^max_FRP_", colnames(X), value = TRUE)
-  if (length(frp_cols) > 0) {
-    for (col in frp_cols) {
-      x <- X[[col]]
-      if (all(is.na(x))) {
-        next
-      }
-      x <- log1p(x)
-      p995 <- quantile(x, 0.995, na.rm = TRUE)
-      if (!is.na(p995)) {
-        x[x > p995] <- p995
-      }
-      X[[col]] <- x
-    }
-    cat("  Log+winsorized", length(frp_cols), "max_FRP columns (99.5%)\n")
-  }
-
-  # Log1p + winsorize prcp_* and avg_BRIGHTNESS_* to tame heavy tails
-  prcp_cols <- grep("^prcp_", colnames(X), value = TRUE)
-  bright_cols <- grep("^avg_BRIGHTNESS_", colnames(X), value = TRUE)
-  for (col in c(prcp_cols, bright_cols)) {
-    x <- X[[col]]
-    if (all(is.na(x))) {
+  for (lam in lambda_grid) {
+    cat('  Trying lambda =', lam, '\n')
+    lam_vec <- rep(lam, ncol(X.scl))
+    res_try <- tryCatch(cbps_att(as.matrix(X.scl),
+                                W,
+                                theta.init = theta_start,
+                                control = list(trace = 0, maxit = 6000),
+                                lambda = lam_vec), error = function(e) NULL)
+    if (is.null(res_try) || is.null(res_try$convergence)) next
+    if (res_try$convergence != 0) {
+      cat('    optimizer did not converge (code=', res_try$convergence, '), skipping\n', sep = '')
       next
     }
-    x <- log1p(x)
-    p995 <- quantile(x, 0.995, na.rm = TRUE)
-    if (!is.na(p995)) {
-      x[x > p995] <- p995
-    }
-    X[[col]] <- x
-  }
-  if (length(prcp_cols) + length(bright_cols) > 0) {
-    cat("  Log+winsorized", length(prcp_cols), "prcp and",
-        length(bright_cols), "avg_BRIGHTNESS columns (99.5%)\n")
-  }
+    # compute metrics
+    metrics <- compute_weights_metrics(res_try, W)
+    if (is.null(metrics)) next
 
-  # Drop extremely sparse fire_* columns to avoid huge z-scores from rare events
-  fire_cols <- grep("^fire_", colnames(X), value = TRUE)
-  if (length(fire_cols) > 0) {
-    sparse_fire <- c()
-    for (col in fire_cols) {
-      p_one <- mean(X[[col]] > 0, na.rm = TRUE)
-      if (!is.na(p_one) && p_one < 0.005) {
-        sparse_fire <- c(sparse_fire, col)
-      }
-    }
-    if (length(sparse_fire) > 0) {
-      X <- X[, !colnames(X) %in% sparse_fire]
-      cat("  Dropped", length(sparse_fire), "sparse fire_* columns (<0.5% ones)\n")
+    candidates[[length(candidates) + 1]] <- data.frame(lambda = lam,
+                                                       ess = metrics$ess,
+                                                       top10_share = metrics$top10_share,
+                                                       max_weight = metrics$max_weight,
+                                                       max_smd = metrics$max_smd,
+                                                       converged = res_try$convergence == 0,
+                                                       stringsAsFactors = FALSE)
+    fit_by_lambda[[as.character(lam)]] <- res_try
+    if (!is.null(res_try$theta.hat) && length(res_try$theta.hat) == length(theta_start)) {
+      theta_start <- res_try$theta.hat
     }
   }
-  
-  # Standardize covariates
-  X.mean <- colMeans(X, na.rm=TRUE)
-  X.sd <- apply(X, 2, sd, na.rm=TRUE)
-  X.sd[is.na(X.sd) | X.sd == 0] <- 1  # in case Xj is constant
-  X.scl <- scale(X, center = X.mean, scale = X.sd)
 
-  # Run CBPS-ATT with regularization grid search
-  # Grid: lambda = 10^(-6 to 1) across 8 levels
-  res_regu.list <- lapply(1:8, function(n) {
-    res <- cbps_att(as.matrix(X.scl),
-                    W,
-                    theta.init = rep(0, ncol(X) + 1),
-                    control = list(trace = 10, maxit = 6000),
-                    lambda = rep(10^(n - 7), ncol(X)))
-    return(res)
-  })
+  cand_df <- if (length(candidates) > 0) do.call(rbind, candidates) else data.frame()
+  if (nrow(cand_df) == 0) {
+    stop('No feasible lambda found under any threshold tier. Check overlap or relax constraints. Diagnostic summary: no converged lambda candidates available.')
+  }
 
-  # Check BOTH convergence AND weight validity during lambda selection
-  # (prevents selecting numerically unstable solutions)
-  converge_set <- sapply(res_regu.list, function(res) {
-    converged <- (res$convergence == 0)
-    valid_weights <- !any(is.na(res$weights.0)) && !any(is.infinite(res$weights.0)) &&
-                     !any(is.na(res$weights.1)) && !any(is.infinite(res$weights.1))
-    return(converged && valid_weights)
-  })
-  
-  if (!any(converge_set)) {
-    cat("  No solution with valid convergence AND valid weights found, skipping.\n")
+  selection_result <- run_lambda_selection(cand_df, n_ctrl)
+  chosen_row <- selection_result$selected_row
+  selection_log <- selection_result$selection_log
+
+  rho <- chosen_row$lambda
+  res <- fit_by_lambda[[as.character(rho)]]
+
+  ess_ratio <- selection_log$ess_ratio
+  ess_quality <- if (is.na(ess_ratio)) {
+    'unknown'
+  } else if (ess_ratio >= 0.3) {
+    'strong'
+  } else if (ess_ratio >= 0.2) {
+    'acceptable'
+  } else if (ess_ratio >= 0.1) {
+    'borderline'
+  } else {
+    'problematic'
+  }
+
+  cat('  Selected lambda =', rho, 'using tier =', selection_log$tier_used, '\n')
+  cat('  Selection metrics: max_smd =', round(chosen_row$max_smd, 4),
+      ', top10_share =', round(chosen_row$top10_share, 4),
+      ', max_weight =', round(chosen_row$max_weight, 4),
+      ', ess =', round(chosen_row$ess, 2), '\n')
+  cat('  ESS/N(control) =', round(ess_ratio, 4), '(', ess_quality, ')\n')
+  if (length(selection_log$warnings) > 0) {
+    for (w in selection_log$warnings) cat('  WARNING:', w, '\n')
+  }
+
+  bundle_file <- paste0(outDir, 'lambda_diagnostics_bundle_', treated.year, '_', area, '.RDS')
+  saveRDS(
+    list(
+      year = treated.year,
+      area = area,
+      selected_lambda = rho,
+      cand_df = cand_df,
+      selection_log = selection_log
+    ),
+    bundle_file
+  )
+  cat('  Saved: ', bundle_file, '\n', sep = '')
+
+  # Post-fit validity checks
+  if (is.null(res) || is.null(res$convergence)) {
+    cat('  No valid cbps fit returned, skipping.\n')
     next
   }
-  
-  idx <- min(which(converge_set))
-  res <- res_regu.list[[idx]]
-  rho <- 10^(idx - 7)
+  if (res$convergence != 0) {
+    cat('  ⚠ cbps_att did not converge (code=', res$convergence, '), continuing with result but review logs.\n', sep='')
+  }
   
   # Check post-balance covariate balance
-  max_balance_std <- max(abs(res$balance.std), na.rm=TRUE)
-  median_balance_std <- median(abs(res$balance.std), na.rm=TRUE)
-  
+  max_balance_std <- max(abs(res$balance.std), na.rm = TRUE)
+  median_balance_std <- median(abs(res$balance.std), na.rm = TRUE)
+
   cat("  Covariate balance: median |SMD| =", round(median_balance_std, 3),
       ", max |SMD| =", round(max_balance_std, 3), "\n")
-  
-  if (max_balance_std > 0.5) {
-    cat("  ⚠ WARNING: Max |balance.std| = ", round(max_balance_std, 3), 
-        " (recommend |SMD| < 0.1)\n", sep="")
+
+  if (max_balance_std > 0.1) {
+    cat("  ⚠ WARNING: Max |balance.std| = ", round(max_balance_std, 3), " (recommend |SMD| < 0.1)\n", sep = "")
   }
   
   # Create weights table (treated get weights.1, control get weights.0)
@@ -187,11 +197,35 @@ for (treated.year in years) {
     weight = ifelse(df$treated == 1, res$weights.1, res$weights.0)
   )
 
-  # Save fit results and weights
-  saveRDS(res, paste0(outDir, "cbps_fit_", treated.year, "_conifer_rho", rho, ".RDS"))
-  saveRDS(weights_df, paste0(outDir, "cbps_weights_", treated.year, "_conifer.RDS"))
-  cat("  Saved: cbps_fit_", treated.year, "_conifer_rho", rho, ".RDS\n", sep = "")
-  cat("  Saved: cbps_weights_", treated.year, "_conifer.RDS\n", sep = "")
+  # Save fit results and weights before running diagnostics to prioritize outputs
+  saveRDS(res, paste0(outDir, "cbps_fit_", treated.year, "_", area, "_rho", rho, ".RDS"))
+  saveRDS(weights_df, paste0(outDir, "cbps_weights_", treated.year, "_", area, ".RDS"))
+  cat("  Saved: cbps_fit_", treated.year, "_", area, "_rho", rho, ".RDS\n", sep = "")
+  cat("  Saved: cbps_weights_", treated.year, "_", area, ".RDS\n", sep = "")
+
+  if (record_covariate_diagnostics) {
+    tryCatch({
+      run_covariate_exploration(
+        treated_year = treated.year,
+        area = area,
+        X = X,
+        W = W,
+        res = res,
+        cand_df = cand_df,
+        selection_log = selection_log,
+        out_dir = diag_out_dir,
+        run_prefit_overlap = FALSE,
+        write_prepost_metrics = FALSE,
+        write_distribution = FALSE,
+        write_block_summary = FALSE,
+        write_summary = TRUE
+      )
+    }, error = function(e) {
+      cat("  Covariate diagnostics failed: ", e$message, "\n", sep = "")
+    })
+  }
   
   gc()
 }
+
+} # end guard for SKIP_IMPLEMENT_CBPS_MAIN

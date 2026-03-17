@@ -90,6 +90,16 @@ for (treated.year in parameters$year) {
   if (length(merge_keys) < 2) stop("LATITUDE and LONGITUDE must be present in all input tables for merging.")
   df <- merge(grid_climate, tree_cover, by = merge_keys, all.x = TRUE)
   df <- merge(df, fire_brightness_frp, by = merge_keys, all.x = TRUE)
+
+  # Fire behavior files should encode no-fire years as 0, but keep a defensive
+  # fill here so legacy/cached files with NA do not propagate into modeling.
+  fire_related_cols <- grep('^(fire_|avg_BRIGHTNESS_|max_FRP_)', names(df), value = TRUE)
+  if (length(fire_related_cols) > 0) {
+    for (cc in fire_related_cols) {
+      if (anyNA(df[[cc]])) df[[cc]][is.na(df[[cc]])] <- 0
+    }
+  }
+
   df$unit <- paste0(df$LATITUDE, df$LONGITUDE)
 
   # Create exposed and unexposed units based on fire intensity (FRP) at focal years
