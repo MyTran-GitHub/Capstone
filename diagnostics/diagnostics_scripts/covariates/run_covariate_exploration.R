@@ -4,6 +4,10 @@
 #
 # This script is designed to be sourced and called from implement_cbps.R so
 # diagnostics are computed from an existing fit (no second CBPS run).
+#
+# Default output is a single centralized scorecard file with:
+# - one overall row for the year
+# - one row per covariate block (fire, prcp, swe, etc.)
 
 suppressPackageStartupMessages({
   if (!requireNamespace("stats", quietly = TRUE)) {
@@ -69,39 +73,6 @@ weighted_quantile_safe <- function(x, w, probs = c(0.05, 0.25, 0.5, 0.75, 0.95))
   })
 }
 
-weighted_ecdf_fun <- function(x, w = NULL) {
-  if (is.null(w)) {
-    f <- ecdf(x)
-    return(function(v) f(v))
-  }
-  ok <- !is.na(x) & !is.na(w) & is.finite(x) & is.finite(w) & w >= 0
-  x <- x[ok]
-  w <- w[ok]
-  if (length(x) == 0 || sum(w) <= 0) {
-    return(function(v) rep(NA_real_, length(v)))
-  }
-  ord <- order(x)
-  x <- x[ord]
-  w <- w[ord]
-  cw <- cumsum(w) / sum(w)
-  function(v) {
-    sapply(v, function(vv) {
-      idx <- max(which(x <= vv), 0)
-      if (idx == 0) return(0)
-      cw[idx]
-    })
-  }
-}
-
-weighted_ks <- function(x_t, x_c, w_c = NULL) {
-  if (length(x_t) == 0 || length(x_c) == 0) return(NA_real_)
-  ft <- weighted_ecdf_fun(x_t, NULL)
-  fc <- weighted_ecdf_fun(x_c, w_c)
-  grid <- sort(unique(c(x_t, x_c)))
-  d <- abs(ft(grid) - fc(grid))
-  max(d, na.rm = TRUE)
-}
-
 safe_smd <- function(mean_t, mean_c, sd_ref) {
   if (is.na(mean_t) || is.na(mean_c) || is.na(sd_ref) || sd_ref <= 0) return(NA_real_)
   (mean_t - mean_c) / sd_ref
@@ -121,52 +92,121 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
   }
   if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
 
+  df$lambda <- as.numeric(df$lambda)
   df <- df[order(df$lambda), , drop = FALSE]
   df$feasible_strict <- with(df,
     !is.na(max_smd) & !is.na(top10_share) & !is.na(max_weight) &
       max_smd <= 0.10 & top10_share <= 0.75 & max_weight <= 0.10
   )
-
-  x_scale <- ggplot2::scale_x_log10()
-
-  p1 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$max_smd)) +
-    ggplot2::geom_line() +
-    ggplot2::geom_point(ggplot2::aes(color = rlang::.data$feasible_strict)) +
-    ggplot2::geom_hline(yintercept = 0.10, linetype = "dashed") +
-    ggplot2::labs(title = "Max SMD", y = "max SMD", x = "lambda") +
-    x_scale +
-    ggplot2::theme_minimal()
-
-  p2 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$top10_share)) +
-    ggplot2::geom_line() +
-    ggplot2::geom_hline(yintercept = c(0.75, 0.80, 0.85), linetype = "dashed") +
-    ggplot2::labs(title = "Top 10% Weight Share", y = "share", x = "lambda") +
-    x_scale +
-    ggplot2::theme_minimal()
-
-  p3 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$max_weight)) +
-    ggplot2::geom_line() +
-    ggplot2::geom_hline(yintercept = c(0.10, 0.15, 0.20), linetype = "dashed") +
-    ggplot2::labs(title = "Max Weight", y = "max weight", x = "lambda") +
-    x_scale +
-    ggplot2::theme_minimal()
-
-  p4 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$ess)) +
-    ggplot2::geom_line() +
-    ggplot2::labs(title = "Effective Sample Size", y = "ESS", x = "lambda") +
-    x_scale +
-    ggplot2::theme_minimal()
-
-  if (!is.null(selected_lambda) && is.finite(selected_lambda)) {
-    p1 <- p1 + ggplot2::geom_vline(xintercept = selected_lambda, linetype = "dotted")
-    p2 <- p2 + ggplot2::geom_vline(xintercept = selected_lambda, linetype = "dotted")
-    p3 <- p3 + ggplot2::geom_vline(xintercept = selected_lambda, linetype = "dotted")
-    p4 <- p4 + ggplot2::geom_vline(xintercept = selected_lambda, linetype = "dotted")
+  tol <- if (!is.null(selected_lambda) && is.finite(selected_lambda)) {
+    max(.Machine$double.eps * 10, abs(selected_lambda) * 1e-8)
+  } else {
+    0
+  }
+  df$is_selected <- if (!is.null(selected_lambda) && is.finite(selected_lambda)) {
+    abs(df$lambda - selected_lambda) <= tol
+  } else {
+    rep(FALSE, nrow(df))
   }
 
-  plt <- (p1 | p2) / (p3 | p4)
+  x_breaks <- sort(unique(df$lambda))
+  x_labels <- vapply(x_breaks, function(x) formatC(x, format = "e", digits = 1), character(1))
+
+  df$label_smd <- sprintf("%.3f", df$max_smd)
+  df$label_top10 <- sprintf("%.3f", df$top10_share)
+  df$label_maxw <- sprintf("%.3f", df$max_weight)
+  df$label_ess <- format(round(df$ess, 0), big.mark = ",", scientific = FALSE, trim = TRUE)
+
+  add_labels <- function(p, label_col) {
+    if (requireNamespace("ggrepel", quietly = TRUE)) {
+      p + ggrepel::geom_text_repel(
+        ggplot2::aes(label = rlang::.data[[label_col]]),
+        size = 3,
+        box.padding = 0.18,
+        point.padding = 0.16,
+        max.overlaps = Inf,
+        min.segment.length = 0,
+        segment.alpha = 0.5,
+        seed = 1,
+        show.legend = FALSE
+      )
+    } else {
+      p + ggplot2::geom_text(
+        ggplot2::aes(label = rlang::.data[[label_col]]),
+        size = 2.8,
+        vjust = -0.7,
+        check_overlap = FALSE,
+        show.legend = FALSE
+      )
+    }
+  }
+
+  x_scale <- ggplot2::scale_x_log10(
+    breaks = x_breaks,
+    labels = x_labels
+  )
+
+  base_theme <- ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank(),
+      panel.grid.major.x = ggplot2::element_line(color = "grey88", linewidth = 0.3),
+      panel.grid.major.y = ggplot2::element_line(color = "grey90", linewidth = 0.3),
+      axis.title = ggplot2::element_text(face = "bold"),
+      axis.text.x = ggplot2::element_text(angle = 35, hjust = 1),
+      plot.title = ggplot2::element_text(face = "bold")
+    )
+
+  point_layers <- list(
+    ggplot2::geom_line(color = "grey35", linewidth = 0.55),
+    ggplot2::geom_point(ggplot2::aes(shape = rlang::.data$is_selected, color = rlang::.data$is_selected), size = 2.5),
+    ggplot2::scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 17), guide = "none"),
+    ggplot2::scale_color_manual(values = c(`FALSE` = "#2C3E50", `TRUE` = "#C0392B"), guide = "none")
+  )
+
+  p1 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$max_smd)) +
+    point_layers +
+    ggplot2::geom_hline(yintercept = 0.10, linetype = "dashed") +
+    ggplot2::labs(title = "Max SMD", y = "Max SMD", x = "Lambda (log scale)") +
+    x_scale +
+    base_theme
+  p1 <- add_labels(p1, "label_smd")
+
+  p2 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$top10_share)) +
+    point_layers +
+    ggplot2::geom_hline(yintercept = c(0.75, 0.80, 0.85), linetype = "dashed") +
+    ggplot2::labs(title = "Top 10% Weight Share", y = "Share", x = "Lambda (log scale)") +
+    x_scale +
+    base_theme
+  p2 <- add_labels(p2, "label_top10")
+
+  p3 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$max_weight)) +
+    point_layers +
+    ggplot2::geom_hline(yintercept = c(0.10, 0.15, 0.20), linetype = "dashed") +
+    ggplot2::labs(title = "Max Control Weight", y = "Max Weight", x = "Lambda (log scale)") +
+    x_scale +
+    base_theme
+  p3 <- add_labels(p3, "label_maxw")
+
+  p4 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$ess)) +
+    point_layers +
+    ggplot2::labs(title = "Effective Sample Size", y = "ESS (controls)", x = "Lambda (log scale)") +
+    x_scale +
+    base_theme
+  p4 <- add_labels(p4, "label_ess")
+
+  plt <- (p1 | p2) / (p3 | p4) +
+    patchwork::plot_annotation(
+      title = "Lambda Diagnostics",
+      subtitle = if (!is.null(selected_lambda) && is.finite(selected_lambda)) {
+        paste("Selected lambda:", formatC(selected_lambda, format = "e", digits = 2), "(red triangles)")
+      } else {
+        NULL
+      },
+      caption = "Point labels show exact metric values at each lambda"
+    )
+
   if (!is.null(out_file)) {
-    ggplot2::ggsave(filename = out_file, plot = plt, width = 11, height = 8)
+    ggplot2::ggsave(filename = out_file, plot = plt, width = 12, height = 8.5, dpi = 320, bg = "white")
   }
   invisible(plt)
 }
@@ -177,13 +217,15 @@ run_covariate_exploration <- function(treated_year,
                                       W,
                                       res,
                                       cand_df = NULL,
-                                      selection_log = NULL,
+                                      selected_lambda = NULL,
                                       out_dir = "diagnostics/diagnostics_results/covariates",
-                                      run_prefit_overlap = TRUE,
+                                      run_prefit_overlap = FALSE,
                                       prefit_if_missing = TRUE,
                                       write_prepost_metrics = FALSE,
                                       write_distribution = FALSE,
                                       progress_every = NULL,
+                                      # Optional duplicate block-level export. Block rows are
+                                      # already included in the centralized scorecard file.
                                       write_block_summary = FALSE,
                                       write_summary = TRUE) {
   cfg <- get_diagnostics_config()
@@ -198,23 +240,28 @@ run_covariate_exploration <- function(treated_year,
 
   # Keep lambda diagnostics output minimal: plot only.
   if (!is.null(cand_df) && nrow(cand_df) > 0) {
-    selected_lambda <- NULL
-    if (!is.null(selection_log) && !is.null(selection_log$selected_lambda)) {
-      selected_lambda <- as.numeric(selection_log$selected_lambda)
+    marker_lambda <- selected_lambda
+
+    # Primary source: unified lambda_run file with explicit chosen column.
+    if (is.null(marker_lambda) && "chosen" %in% colnames(cand_df)) {
+      chosen_rows <- cand_df[isTRUE(cand_df$chosen) | (!is.na(cand_df$chosen) & cand_df$chosen), , drop = FALSE]
+      if (nrow(chosen_rows) > 0 && "lambda" %in% colnames(chosen_rows)) {
+        marker_lambda <- as.numeric(chosen_rows$lambda[1])
+      }
     }
+
     plot_lambda_diagnostics(
       cand_df,
-      selected_lambda = selected_lambda,
+      selected_lambda = marker_lambda,
       out_file = file.path(out_dir, paste0("lambda_diagnostics_", treated_year, "_", area, ".png"))
     )
   }
 
+  # Advanced-only prefit overlap screening. Keep off for standard runs.
   prefit_overlap_file <- file.path(out_dir, paste0("covariate_overlap_", treated_year, "_", area, ".csv"))
   prefit_summary_file <- file.path(out_dir, paste0("overlap_screen_summary_", treated_year, "_", area, ".csv"))
   prefit_block_file <- file.path(out_dir, paste0("overlap_block_summary_", treated_year, "_", area, ".csv"))
   prefit_missing <- !file.exists(prefit_overlap_file) || !file.exists(prefit_summary_file)
-
-  overlap_screen <- NULL
   if (run_prefit_overlap && exists("screen_prefit_overlap", mode = "function") && (!prefit_if_missing || prefit_missing)) {
     overlap_fun <- get("screen_prefit_overlap", mode = "function")
     overlap_screen <- tryCatch(
@@ -303,9 +350,6 @@ run_covariate_exploration <- function(treated_year,
     smd_pre <- safe_smd(mt, mcp, sdt)
     smd_post <- safe_smd(mt, mcw, sdt)
 
-    ks_pre <- weighted_ks(xt, xc, w_c = w_ctrl)
-    ks_post <- weighted_ks(xt, xc, w_c = w_ctrl)
-
     cbps_smd_pre <- NA_real_
     cbps_smd_post <- NA_real_
     if (!is.null(names(bs_pre)) && nm %in% names(bs_pre)) cbps_smd_pre <- as.numeric(bs_pre[nm])
@@ -334,8 +378,6 @@ run_covariate_exploration <- function(treated_year,
       abs_smd_post = abs(smd_post),
       cbps_smd_pre = cbps_smd_pre,
       cbps_smd_post = cbps_smd_post,
-      ks_pre = ks_pre,
-      ks_post = ks_post,
       stringsAsFactors = FALSE
     )
 
@@ -380,49 +422,57 @@ run_covariate_exploration <- function(treated_year,
   cov_df <- do.call(rbind, cov_rows)
   dist_df <- if (write_distribution && length(dist_rows) > 0) do.call(rbind, dist_rows) else NULL
 
+  summarize_slice <- function(g, row_type, block_name, include_weight_metrics = FALSE) {
+    qsafe <- function(x, p) {
+      x <- x[is.finite(x)]
+      if (length(x) == 0) return(NA_real_)
+      as.numeric(stats::quantile(x, probs = p, na.rm = TRUE, names = FALSE))
+    }
+    mean_pre <- mean(g$abs_smd_pre, na.rm = TRUE)
+    mean_post <- mean(g$abs_smd_post, na.rm = TRUE)
+    denom <- ifelse(is.finite(mean_pre) && mean_pre > 0, mean_pre, NA_real_)
+    reduction_pct <- ifelse(is.na(denom), NA_real_, 100 * (mean_pre - mean_post) / denom)
+
+    data.frame(
+      year = treated_year,
+      area = area,
+      row_type = row_type,
+      block = block_name,
+      n_covariates = nrow(g),
+      n_treated = length(treated_idx),
+      n_control = length(control_idx),
+      ess_control = if (include_weight_metrics) ctrl_ess else NA_real_,
+      top10_share = if (include_weight_metrics) top10_share else NA_real_,
+      max_weight = if (include_weight_metrics) max_weight else NA_real_,
+      abs_smd_pre_p90 = qsafe(g$abs_smd_pre, 0.90),
+      abs_smd_pre_max = ifelse(any(is.finite(g$abs_smd_pre)), max(g$abs_smd_pre, na.rm = TRUE), NA_real_),
+      abs_smd_post_p50 = qsafe(g$abs_smd_post, 0.50),
+      abs_smd_post_p90 = qsafe(g$abs_smd_post, 0.90),
+      abs_smd_post_p95 = qsafe(g$abs_smd_post, 0.95),
+      abs_smd_post_max = max(g$abs_smd_post, na.rm = TRUE),
+      pct_cov_abs_smd_le_0_10 = mean(g$abs_smd_post <= 0.10, na.rm = TRUE),
+      pct_cov_abs_smd_le_0_05 = mean(g$abs_smd_post <= 0.05, na.rm = TRUE),
+      mean_abs_smd_reduction_pct = reduction_pct,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  overall_row <- summarize_slice(cov_df, row_type = "overall", block_name = "all", include_weight_metrics = TRUE)
   block_df <- do.call(
     rbind,
     lapply(split(cov_df, cov_df$block), function(g) {
-      data.frame(
-        year = treated_year,
-        area = area,
-        block = g$block[1],
-        n_covariates = nrow(g),
-        mean_abs_smd_pre = mean(g$abs_smd_pre, na.rm = TRUE),
-        mean_abs_smd_post = mean(g$abs_smd_post, na.rm = TRUE),
-        max_abs_smd_pre = max(g$abs_smd_pre, na.rm = TRUE),
-        max_abs_smd_post = max(g$abs_smd_post, na.rm = TRUE),
-        mean_abs_mean_shift_pre = mean(g$abs_mean_shift_pre, na.rm = TRUE),
-        mean_abs_mean_shift_post = mean(g$abs_mean_shift_post, na.rm = TRUE),
-        mean_ks_pre = mean(g$ks_pre, na.rm = TRUE),
-        mean_ks_post = mean(g$ks_post, na.rm = TRUE),
-        stringsAsFactors = FALSE
-      )
+      summarize_slice(g, row_type = "block", block_name = g$block[1], include_weight_metrics = FALSE)
     })
   )
-  block_df <- block_df[order(-block_df$max_abs_smd_post, -block_df$mean_abs_smd_post), , drop = FALSE]
-
-  summary_df <- data.frame(
-    year = treated_year,
-    area = area,
-    n_covariates = nrow(cov_df),
-    n_treated = length(treated_idx),
-    n_control = length(control_idx),
-    ess_control = ctrl_ess,
-    top10_share = top10_share,
-    max_weight = max_weight,
-    max_abs_smd_pre = max(cov_df$abs_smd_pre, na.rm = TRUE),
-    max_abs_smd_post = max(cov_df$abs_smd_post, na.rm = TRUE),
-    median_abs_smd_pre = median(cov_df$abs_smd_pre, na.rm = TRUE),
-    median_abs_smd_post = median(cov_df$abs_smd_post, na.rm = TRUE),
-    mean_abs_mean_shift_pre = mean(cov_df$abs_mean_shift_pre, na.rm = TRUE),
-    mean_abs_mean_shift_post = mean(cov_df$abs_mean_shift_post, na.rm = TRUE),
-    stringsAsFactors = FALSE
-  )
+  if (!is.null(block_df) && nrow(block_df) > 0) {
+    block_df <- block_df[order(-block_df$abs_smd_post_p90, -block_df$abs_smd_post_max), , drop = FALSE]
+    rownames(block_df) <- NULL
+  }
+  scorecard_df <- rbind(overall_row, block_df)
 
   if (isTRUE(cfg$outputs$validate_before_write)) {
     validate_output_df(cov_df,
-      required_cols = c("year", "area", "covariate", "block", "abs_smd_pre", "abs_smd_post", "ks_pre", "ks_post"),
+      required_cols = c("year", "area", "covariate", "block", "abs_smd_pre", "abs_smd_post"),
       key_cols = c("covariate", "abs_smd_post"),
       label = "covariate_prepost_metrics"
     )
@@ -433,15 +483,10 @@ run_covariate_exploration <- function(treated_year,
         label = "covariate_distribution"
       )
     }
-    validate_output_df(block_df,
-      required_cols = c("year", "area", "block", "n_covariates", "max_abs_smd_post"),
-      key_cols = c("block", "max_abs_smd_post"),
-      label = "covariate_block_summary"
-    )
-    validate_output_df(summary_df,
-      required_cols = c("year", "area", "n_covariates", "ess_control", "max_abs_smd_post"),
-      key_cols = c("year", "area", "max_abs_smd_post"),
-      label = "covariate_summary"
+    validate_output_df(scorecard_df,
+      required_cols = c("year", "area", "row_type", "block", "n_covariates", "ess_control", "abs_smd_post_max"),
+      key_cols = c("row_type", "block", "abs_smd_post_max"),
+      label = "covariate_scorecard"
     )
   }
 
@@ -460,26 +505,32 @@ run_covariate_exploration <- function(treated_year,
     )
   }
   if (write_block_summary) {
-    write.csv(
-      block_df,
-      file = file.path(out_dir, paste0("covariate_block_summary_", treated_year, "_", area, ".csv")),
-      row.names = FALSE
-    )
+    block_rows <- scorecard_df[scorecard_df$row_type == "block", , drop = FALSE]
+    if (nrow(block_rows) > 0) {
+      write.csv(
+        block_rows,
+        file = file.path(out_dir, paste0("covariate_block_summary_", treated_year, "_", area, ".csv")),
+        row.names = FALSE
+      )
+    }
   }
   if (write_summary) {
     write.csv(
-      summary_df,
+      scorecard_df,
       file = file.path(out_dir, paste0("covariate_summary_", treated_year, "_", area, ".csv")),
       row.names = FALSE
     )
   }
 
+  summary_df <- scorecard_df[scorecard_df$row_type == "overall", , drop = FALSE]
+
   cat("  Covariate diagnostics saved to ", out_dir, "\n", sep = "")
   cat("    ESS(control) = ", round(ctrl_ess, 2),
       "; top10_share = ", round(top10_share, 3),
       "; max_weight = ", round(max_weight, 3),
-      "; max |SMD| pre/post = ",
-      round(summary_df$max_abs_smd_pre, 3), "/", round(summary_df$max_abs_smd_post, 3),
+      "; |SMD| p90/max (post) = ",
+      round(summary_df$abs_smd_post_p90, 3), "/", round(summary_df$abs_smd_post_max, 3),
+      "; pct<=0.10 = ", round(100 * summary_df$pct_cov_abs_smd_le_0_10, 1), "%",
       "\n", sep = "")
 
   invisible(list(summary = summary_df, by_covariate = cov_df, by_block = block_df, distribution = dist_df))

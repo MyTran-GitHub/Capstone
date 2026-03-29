@@ -9,9 +9,8 @@ make_lambda_grid <- function(level = c("very_coarse", "coarse", "full")) {
   #        "full"        -> original fine grid for exhaustive search.
   level <- match.arg(level)
   if (level == "very_coarse") {
-    # very small set to drastically reduce runtime while keeping a wide dynamic range
-    # Default requested by user: include smaller values for a single-shot attempt
-    grid <- c(10, 1, 0.1, 0.01, 0.001, 1e-4)
+    # Focus stage-1 search near the empirical balance/overlap frontier.
+    grid <- c(0.1, 0.03, 0.01, 0.003, 0.001)
   } else if (level == "coarse") {
     grid <- c(10, 3, 1, 0.3, 0.1, 0.03, 0.01, 0.003)
   } else {
@@ -23,6 +22,26 @@ make_lambda_grid <- function(level = c("very_coarse", "coarse", "full")) {
 # Convenience accessors
 make_full_lambda_grid <- function() make_lambda_grid("full")
 make_very_coarse_lambda_grid <- function() make_lambda_grid("very_coarse")
+
+make_refined_lambda_grid <- function(lower_lambda,
+                                     upper_lambda,
+                                     n_inner = 6,
+                                     min_ratio = 1.05) {
+  # Build an interior log-spaced grid between two lambda values.
+  # Returns descending values and excludes endpoints.
+  if (!is.finite(lower_lambda) || !is.finite(upper_lambda)) return(numeric(0))
+  if (lower_lambda <= 0 || upper_lambda <= 0) return(numeric(0))
+  if (upper_lambda <= lower_lambda) return(numeric(0))
+  if (!is.finite(n_inner) || n_inner < 1) return(numeric(0))
+
+  ratio <- upper_lambda / lower_lambda
+  if (!is.finite(ratio) || ratio < min_ratio) return(numeric(0))
+
+  grid <- exp(seq(log(upper_lambda), log(lower_lambda), length.out = n_inner + 2))
+  # Drop endpoints; keep unique values sorted high to low for warm-start stability.
+  refined <- sort(unique(grid[2:(length(grid) - 1)]), decreasing = TRUE)
+  refined
+}
 
 # Default inflation factor for problematic covariates. Increase this
 # to give more chance for convergence by de-emphasizing flagged covariates.
