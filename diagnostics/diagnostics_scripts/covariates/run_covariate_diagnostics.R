@@ -1,11 +1,12 @@
 #!/usr/bin/env Rscript
 
-# Central CLI entrypoint for covariate diagnostics.
-# Runs diagnostics from existing prepared data + fitted CBPS results,
-# and does not re-run the CBPS optimization.
+# Lightweight CLI: lambda-path plot only.
+# Reads lambda_run artifact and writes lambda diagnostics figure.
+#
+# Usage:
+#   Rscript diagnostics/diagnostics_scripts/covariates/run_covariate_diagnostics.R \
+#     --year 2019 --area conifer
 
-source("balancing/balancing_config.R")
-source("balancing/prepare_cbps_design.R")
 source("diagnostics/diagnostics_scripts/covariates/run_covariate_exploration.R")
 
 parse_flag_value <- function(args, flag, default = NULL) {
@@ -17,180 +18,68 @@ parse_flag_value <- function(args, flag, default = NULL) {
   default
 }
 
-parse_bool <- function(x, default = FALSE) {
-  if (is.null(x) || length(x) == 0 || is.na(x)) return(default)
-  lx <- tolower(as.character(x)[1])
-  if (lx %in% c("1", "true", "t", "yes", "y")) return(TRUE)
-  if (lx %in% c("0", "false", "f", "no", "n")) return(FALSE)
-  default
-}
-
-parse_numeric <- function(x, default = NULL) {
-  if (is.null(x) || length(x) == 0 || is.na(x)) return(default)
-  v <- suppressWarnings(as.numeric(as.character(x)[1]))
-  if (is.na(v)) default else v
-}
-
-parse_string <- function(x, default = NULL) {
-  if (is.null(x) || length(x) == 0 || is.na(x)) return(default)
-  as.character(x)[1]
-}
-
-pick_latest_rho_fit <- function(year, area, base_dir = "data/processed_data/rev_analysis_low") {
-  rho_pattern <- sprintf("^cbps_fit_%d_%s_rho.*\\.RDS$", year, area)
-  rho_hits <- list.files(base_dir, pattern = rho_pattern, full.names = TRUE)
-  if (length(rho_hits) == 0) return(NULL)
-  rho_hits[which.max(file.info(rho_hits)$mtime)]
-}
-
 args <- commandArgs(trailingOnly = TRUE)
-
-if ("--refit" %in% args || "--run-cbps" %in% args) {
-  stop("No-refit contract violation: this script only computes diagnostics from existing fit artifacts.")
-}
-
 year <- as.integer(parse_flag_value(args, "--year", NA))
 area <- parse_flag_value(args, "--area", "conifer")
-data_file <- parse_flag_value(
-  args,
-  "--data-file",
-  if (!is.na(year)) sprintf("data/processed_data/rev_analysis_low/analysis_treated%d_%s.RDS", year, area) else NULL
-)
-fit_file <- parse_flag_value(
-  args,
-  "--fit-file",
-  if (!is.na(year)) {
-    # Prefer area-specific fit if available; keep compatibility with historical conifer naming.
-    latest_fit <- pick_latest_rho_fit(year, area)
-    if (!is.null(latest_fit)) latest_fit else sprintf("data/processed_data/rev_analysis_low/cbps_fit_%d_%s.RDS", year, area)
-  } else {
-    NULL
-  }
-)
 out_dir <- parse_flag_value(args, "--out-dir", "diagnostics/diagnostics_results/covariates")
-# Advanced-only overlap screen; keep off for standard year runs.
-run_prefit_overlap <- parse_bool(parse_flag_value(args, "--run-prefit-overlap", "false"), FALSE)
-write_distribution <- parse_bool(parse_flag_value(args, "--write-distribution", "false"), FALSE)
-write_prepost_metrics <- parse_bool(parse_flag_value(args, "--write-prepost-metrics", "false"), FALSE)
-# Optional duplicate file switch. Block rows are already included
-# in the centralized covariate_summary scorecard.
-write_block_summary <- parse_bool(parse_flag_value(args, "--write-block-summary", "false"), FALSE)
-write_summary <- parse_bool(parse_flag_value(args, "--write-summary", "true"), TRUE)
-progress_every <- parse_numeric(parse_flag_value(args, "--progress-every", NULL), NULL)
-use_design_cache <- parse_bool(parse_flag_value(args, "--use-design-cache", "true"), TRUE)
-design_cache_file <- parse_string(parse_flag_value(args, "--design-cache-file", NULL), NULL)
-lambda_run_file <- parse_string(parse_flag_value(args, "--lambda-run-file", NULL), NULL)
+lambda_run_file <- parse_flag_value(
+  args,
+  "--lambda-run-file",
+  sprintf("diagnostics/diagnostics_results/lambda_run/lambda_run_%d_%s.rds", year, area)
+)
 
 if (is.na(year)) {
   stop("Missing required --year argument.")
 }
-if (is.null(data_file) || !file.exists(data_file)) {
-  stop("Data file not found: ", data_file)
-}
 
-# Resolve fit file robustly from common patterns if user didn't provide an existing file.
-if (is.null(fit_file) || !file.exists(fit_file)) {
-  latest_fit <- pick_latest_rho_fit(year, area)
-  fit_candidates <- c(
-    latest_fit,
-    sprintf("data/processed_data/rev_analysis_low/cbps_fit_%d_%s.RDS", year, area),
-    pick_latest_rho_fit(year, "conifer"),
-    sprintf("data/processed_data/rev_analysis_low/cbps_fit_%d_conifer.RDS", year)
-  )
-  fit_candidates <- unique(fit_candidates)
-  fit_hit <- fit_candidates[file.exists(fit_candidates)]
-  if (length(fit_hit) == 0) {
-    stop("Could not find a fit RDS. Provide --fit-file explicitly.")
+if (!file.exists(lambda_run_file)) {
+  legacy_lambda_run <- sprintf("data/processed_data/rev_analysis_low/lambda_run_%d_%s.rds", year, area)
+  if (file.exists(legacy_lambda_run)) {
+    lambda_run_file <- legacy_lambda_run
   }
-  fit_file <- fit_hit[1]
 }
 
-cat("Covariate diagnostics run\n")
-cat("  contract  : no-refit (existing fit artifacts only)\n")
+if (!file.exists(lambda_run_file)) {
+  stop("lambda_run file not found. Checked: ",
+       sprintf("diagnostics/diagnostics_results/lambda_run/lambda_run_%d_%s.rds", year, area),
+       " and legacy path in data/processed_data/rev_analysis_low")
+}
+
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+cand_df <- readRDS(lambda_run_file)
+if (!is.data.frame(cand_df) || nrow(cand_df) == 0) {
+  stop("lambda_run file does not contain candidate data.frame rows: ", lambda_run_file)
+}
+if (!"lambda" %in% colnames(cand_df)) {
+  stop("lambda_run missing required column: lambda")
+}
+
+selected_lambda <- NA_real_
+if ("chosen" %in% colnames(cand_df)) {
+  chosen_rows <- cand_df[isTRUE(cand_df$chosen) | (!is.na(cand_df$chosen) & cand_df$chosen), , drop = FALSE]
+  if (nrow(chosen_rows) > 0) {
+    selected_lambda <- as.numeric(chosen_rows$lambda[1])
+  }
+}
+
+if (!is.finite(selected_lambda)) {
+  sel_ctx <- attr(cand_df, "selection_context")
+  if (!is.null(sel_ctx) && !is.null(sel_ctx$selected_lambda) && is.finite(as.numeric(sel_ctx$selected_lambda))) {
+    selected_lambda <- as.numeric(sel_ctx$selected_lambda)
+  }
+}
+
+plot_file <- file.path(out_dir, paste0("lambda_diagnostics_", year, "_", area, ".png"))
+plot_lambda_diagnostics(cand_df, selected_lambda = selected_lambda, out_file = plot_file)
+
+cat("Lambda-path plotting run\n")
 cat("  year      : ", year, "\n", sep = "")
 cat("  area      : ", area, "\n", sep = "")
-cat("  data file : ", data_file, "\n", sep = "")
-cat("  fit file  : ", fit_file, "\n", sep = "")
-cat("  out dir   : ", out_dir, "\n", sep = "")
-cat("  distribution: ", write_distribution, "\n", sep = "")
-cat("  prepost metrics: ", write_prepost_metrics, "\n", sep = "")
-cat("  block summary: ", write_block_summary, "\n", sep = "")
-cat("  summary: ", write_summary, "\n", sep = "")
-if (!is.null(progress_every)) {
-  cat("  progress-every: ", progress_every, "\n", sep = "")
+cat("  lambda run: ", lambda_run_file, "\n", sep = "")
+if (is.finite(selected_lambda)) {
+  cat("  selected  : ", selected_lambda, "\n", sep = "")
+} else {
+  cat("  selected  : not found (plot rendered without selected marker)\n")
 }
-cat("  use-design-cache: ", use_design_cache, "\n", sep = "")
-if (!is.null(design_cache_file)) {
-  cat("  design-cache-file: ", design_cache_file, "\n", sep = "")
-}
-
-df <- readRDS(data_file)
-fit <- readRDS(fit_file)
-cfg <- get_diagnostics_config()
-
-if (is.null(design_cache_file)) {
-  design_cache_file <- sprintf("data/processed_data/rev_analysis_low/design_cache_%d_%s.RDS", year, area)
-}
-if (is.null(lambda_run_file)) {
-  lambda_run_file <- sprintf("data/processed_data/rev_analysis_low/lambda_run_%d_%s.rds", year, area)
-}
-
-prep <- NULL
-if (isTRUE(use_design_cache) && file.exists(design_cache_file)) {
-  prep <- readRDS(design_cache_file)
-  if (!is.list(prep) || is.null(prep$X) || is.null(prep$W)) {
-    warning("Invalid design cache; recomputing: ", design_cache_file)
-    prep <- NULL
-  }
-}
-
-if (is.null(prep)) {
-  prep <- prepare_cbps_design(df, opts = list(default_winsor_p = cfg$preprocessing$default_winsor_p))
-  if (isTRUE(use_design_cache)) {
-    saveRDS(list(X = prep$X, W = prep$W), design_cache_file)
-  }
-}
-
-cand_df <- NULL
-selected_lambda <- NULL
-
-# Unified lambda_run artifact.
-if (file.exists(lambda_run_file)) {
-  cand_obj <- readRDS(lambda_run_file)
-  if (is.data.frame(cand_obj)) {
-    cand_df <- cand_obj
-    cat("  lambda run file : ", lambda_run_file, "\n", sep = "")
-    if ("chosen" %in% colnames(cand_df) && "lambda" %in% colnames(cand_df)) {
-      chosen_rows <- cand_df[isTRUE(cand_df$chosen) | (!is.na(cand_df$chosen) & cand_df$chosen), , drop = FALSE]
-      if (nrow(chosen_rows) > 0) {
-        selected_lambda <- as.numeric(chosen_rows$lambda[1])
-      }
-    }
-  }
-}
-
-if (is.null(cand_df)) {
-  cat("  note: no cand_df available. Lambda path plot will be skipped.\n")
-}
-if (is.null(selected_lambda)) {
-  cat("  note: no selected lambda marker found. Plot will render without selected-lambda marker.\n")
-}
-
-run_covariate_exploration(
-  treated_year = year,
-  area = area,
-  X = prep$X,
-  W = prep$W,
-  res = fit,
-  cand_df = cand_df,
-  selected_lambda = selected_lambda,
-  out_dir = out_dir,
-  run_prefit_overlap = run_prefit_overlap,
-  write_prepost_metrics = write_prepost_metrics,
-  write_distribution = write_distribution,
-  write_block_summary = write_block_summary,
-  write_summary = write_summary,
-  progress_every = progress_every
-)
-
-cat("Completed centralized covariate diagnostics.\n")
+cat("  output    : ", plot_file, "\n", sep = "")

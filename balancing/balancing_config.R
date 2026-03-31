@@ -14,11 +14,37 @@ get_diagnostics_config <- function(overrides = list()) {
       ks_fail = 0.30,
       max_fail_fraction = 0.02
     ),
-    selection_thresholds = list(
-      tiers = list(
-        list(name = "strict", max_smd = 0.10, top10 = 0.75, max_weight = 0.10),
-        list(name = "moderate", max_smd = 0.10, top10 = 0.80, max_weight = 0.15),
-        list(name = "relaxed", max_smd = 0.12, top10 = 0.85, max_weight = 0.20)
+    lambda_selection = list(
+      hard_gates = list(
+        max_smd = 0.10,
+        median_smd = 0.05,
+        top10_share = 0.70,
+        max_weight = 0.10,
+        ess_frac = 0.02,
+        ess_mult_treated = 1.5
+      ),
+      # Explicit, pre-specified fallback gates for difficult years.
+      fallback_gates = list(
+        list(name = "relax_ess", max_smd = 0.12, median_smd = 0.05, top10_share = 0.70, max_weight = 0.10, ess_frac = 0.01, ess_mult_treated = 1.2),
+        list(name = "relax_concentration_and_ess", max_smd = 0.15, median_smd = 0.05, top10_share = 0.75, max_weight = 0.10, ess_frac = 0.01, ess_mult_treated = 1.2)
+      ),
+      emergency_selection = list(
+        enabled = TRUE,
+        # If > 0, enforce a minimal ESS fraction even in emergency mode.
+        ess_frac_floor = 0.00,
+        # If provided, emergency mode can also enforce absolute ESS floors.
+        ess_abs_floor = NULL,
+        ess_mult_treated = 1.0,
+        # Balance-first emergency ranking avoids over-prioritizing ESS.
+        prioritize_balance = TRUE
+      ),
+      ess_plateau_frac = 0.90,
+      stability_filter = list(
+        enabled = FALSE,
+        tolerances = list(
+          max_smd = 0.01,
+          top10_share = 0.02
+        )
       )
     ),
     outputs = list(

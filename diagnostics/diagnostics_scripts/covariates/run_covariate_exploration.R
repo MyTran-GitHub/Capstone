@@ -92,12 +92,17 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
   }
   if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
 
+  cfg <- get_diagnostics_config()
+  hard_gate <- cfg$lambda_selection$hard_gates
+  hard_max_smd <- if (!is.null(hard_gate$max_smd)) as.numeric(hard_gate$max_smd) else 0.10
+  hard_top10 <- if (!is.null(hard_gate$top10_share)) as.numeric(hard_gate$top10_share) else 0.75
+  hard_max_weight <- if (!is.null(hard_gate$max_weight)) as.numeric(hard_gate$max_weight) else 0.10
+
   df$lambda <- as.numeric(df$lambda)
   df <- df[order(df$lambda), , drop = FALSE]
-  df$feasible_strict <- with(df,
-    !is.na(max_smd) & !is.na(top10_share) & !is.na(max_weight) &
-      max_smd <= 0.10 & top10_share <= 0.75 & max_weight <= 0.10
-  )
+  df$feasible_strict <-
+    !is.na(df$max_smd) & !is.na(df$top10_share) & !is.na(df$max_weight) &
+    df$max_smd <= hard_max_smd & df$top10_share <= hard_top10 & df$max_weight <= hard_max_weight
   tol <- if (!is.null(selected_lambda) && is.finite(selected_lambda)) {
     max(.Machine$double.eps * 10, abs(selected_lambda) * 1e-8)
   } else {
@@ -118,9 +123,12 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
   df$label_ess <- format(round(df$ess, 0), big.mark = ",", scientific = FALSE, trim = TRUE)
 
   add_labels <- function(p, label_col) {
+    label_df <- p$data
+    label_df$.label <- label_df[[label_col]]
     if (requireNamespace("ggrepel", quietly = TRUE)) {
       p + ggrepel::geom_text_repel(
-        ggplot2::aes(label = rlang::.data[[label_col]]),
+        data = label_df,
+        ggplot2::aes_string(label = ".label"),
         size = 3,
         box.padding = 0.18,
         point.padding = 0.16,
@@ -132,7 +140,8 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
       )
     } else {
       p + ggplot2::geom_text(
-        ggplot2::aes(label = rlang::.data[[label_col]]),
+        data = label_df,
+        ggplot2::aes_string(label = ".label"),
         size = 2.8,
         vjust = -0.7,
         check_overlap = FALSE,
@@ -158,20 +167,20 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
 
   point_layers <- list(
     ggplot2::geom_line(color = "grey35", linewidth = 0.55),
-    ggplot2::geom_point(ggplot2::aes(shape = rlang::.data$is_selected, color = rlang::.data$is_selected), size = 2.5),
+    ggplot2::geom_point(ggplot2::aes_string(shape = "is_selected", color = "is_selected"), size = 2.5),
     ggplot2::scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 17), guide = "none"),
     ggplot2::scale_color_manual(values = c(`FALSE` = "#2C3E50", `TRUE` = "#C0392B"), guide = "none")
   )
 
-  p1 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$max_smd)) +
+  p1 <- ggplot2::ggplot(df, ggplot2::aes_string(x = "lambda", y = "max_smd")) +
     point_layers +
-    ggplot2::geom_hline(yintercept = 0.10, linetype = "dashed") +
+    ggplot2::geom_hline(yintercept = hard_max_smd, linetype = "dashed") +
     ggplot2::labs(title = "Max SMD", y = "Max SMD", x = "Lambda (log scale)") +
     x_scale +
     base_theme
   p1 <- add_labels(p1, "label_smd")
 
-  p2 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$top10_share)) +
+  p2 <- ggplot2::ggplot(df, ggplot2::aes_string(x = "lambda", y = "top10_share")) +
     point_layers +
     ggplot2::geom_hline(yintercept = c(0.75, 0.80, 0.85), linetype = "dashed") +
     ggplot2::labs(title = "Top 10% Weight Share", y = "Share", x = "Lambda (log scale)") +
@@ -179,7 +188,7 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
     base_theme
   p2 <- add_labels(p2, "label_top10")
 
-  p3 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$max_weight)) +
+  p3 <- ggplot2::ggplot(df, ggplot2::aes_string(x = "lambda", y = "max_weight")) +
     point_layers +
     ggplot2::geom_hline(yintercept = c(0.10, 0.15, 0.20), linetype = "dashed") +
     ggplot2::labs(title = "Max Control Weight", y = "Max Weight", x = "Lambda (log scale)") +
@@ -187,7 +196,7 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
     base_theme
   p3 <- add_labels(p3, "label_maxw")
 
-  p4 <- ggplot2::ggplot(df, ggplot2::aes(x = rlang::.data$lambda, y = rlang::.data$ess)) +
+  p4 <- ggplot2::ggplot(df, ggplot2::aes_string(x = "lambda", y = "ess")) +
     point_layers +
     ggplot2::labs(title = "Effective Sample Size", y = "ESS (controls)", x = "Lambda (log scale)") +
     x_scale +
