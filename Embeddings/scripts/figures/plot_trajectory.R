@@ -17,7 +17,7 @@
 ##   post_years: Optional comma-separated post-treatment years (e.g., "2020,2021")
 ##
 ## Example:
-##   Rscript scripts/figures/plot_trajectory.R 2019 50 2000 2010 2011 2015 "2020,2021"
+##   Rscript Embeddings/scripts/figures/plot_trajectory.R 2019 50 2000 2013 2014 2018 "2020"
 
 suppressPackageStartupMessages({
   library("ggplot2")
@@ -59,7 +59,7 @@ if (!is.null(post_years)) {
 cat("\n")
 
 # Setup output directory
-output_dir <- paste0("data/figures/trajectory_plots/")
+output_dir <- paste0("Embeddings/data/figures/trajectory_plots/")
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ============================================================================
@@ -69,19 +69,36 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 cat("Loading CBPS weights...\n")
 
 # Baseline weights
-baseline_weights_file <- paste0("data/outputs/balance/cbps_weights_", treated_year, "_conifer.RDS")
+baseline_weights_file <- paste0("data/processed_data/rev_analysis_low/cbps_weights_", treated_year, "_conifer.RDS")
 
 if (!file.exists(baseline_weights_file)) {
   stop(paste("Baseline weights not found:", baseline_weights_file))
 }
 
 weights_baseline_list <- readRDS(baseline_weights_file)
-weights_baseline <- weights_baseline_list$weights
+# robustly extract weights data.frame from the RDS (allow multiple storage shapes)
+if (is.data.frame(weights_baseline_list)) {
+  weights_baseline <- weights_baseline_list
+} else if (is.list(weights_baseline_list)) {
+  if (!is.null(weights_baseline_list$weights) && is.data.frame(weights_baseline_list$weights)) {
+    weights_baseline <- weights_baseline_list$weights
+  } else if (!is.null(weights_baseline_list$weights_df) && is.data.frame(weights_baseline_list$weights_df)) {
+    weights_baseline <- weights_baseline_list$weights_df
+  } else if (length(weights_baseline_list) >= 1 && is.data.frame(weights_baseline_list[[1]])) {
+    weights_baseline <- weights_baseline_list[[1]]
+  } else {
+    # last resort: try to coerce to data.frame
+    weights_baseline <- tryCatch(as.data.frame(weights_baseline_list), error=function(e) NULL)
+  }
+}
+
+# validate
+if (is.null(weights_baseline) || !is.data.frame(weights_baseline)) stop(paste('Could not extract baseline weights from', baseline_weights_file))
 
 cat("✓ Baseline weights loaded:", nrow(weights_baseline), "pixels\n")
 
 # Embedding weights
-embedding_weights_file <- paste0("data/cbps_integration/", treated_year,
+embedding_weights_file <- paste0("Embeddings/data/cbps_integration/", treated_year,
                                 "/cbps_weights_full_k", optimal_K, "_", treated_year, ".csv")
 
 if (!file.exists(embedding_weights_file)) {
@@ -300,13 +317,13 @@ cat("✓ Saved PNG version to:", gap_file_png, "\n\n")
 # ============================================================================
 
 # Save combined trajectory data for further analysis
-trajectory_file <- paste0("data/cbps_integration/", treated_year,
+trajectory_file <- paste0("Embeddings/data/cbps_integration/", treated_year,
                          "/trajectory_comparison_k", optimal_K, "_", treated_year, ".csv")
 write.csv(fire_combined, trajectory_file, row.names = FALSE)
 cat("✓ Saved trajectory data to:", trajectory_file, "\n")
 
 # Save gap data
-gap_file_data <- paste0("data/cbps_integration/", treated_year,
+gap_file_data <- paste0("Embeddings/data/cbps_integration/", treated_year,
                        "/gap_comparison_k", optimal_K, "_", treated_year, ".csv")
 write.csv(fire_wide, gap_file_data, row.names = FALSE)
 cat("✓ Saved gap data to:", gap_file_data, "\n\n")
