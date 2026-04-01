@@ -74,84 +74,56 @@ import pandas as pd
 import logging
 import subprocess
 import tempfile
-from typing import Dict, List, Tuple, Set
+import json
+from typing import Dict, List, Tuple, Set, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+K_SELECTION_DIR = DATA_DIR / "k_selection"
+CBPS_INTEGRATION_DIR = DATA_DIR / "cbps_integration"
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s - %(name)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def compute_all_similarities(embeddings_df: pd.DataFrame) -> Dict[int, np.ndarray]:
-    """
-    Compute similarity from each treated pixel to all control pixels (VECTORIZED)
-    Returns:
-        Dictionary: treated_idx -> array of (control_idx, similarity) sorted by similarity descending
-    """
-    logger.info("Computing similarities for all treated-control pairs (vectorized)...")
-    
-    # Import sklearn for vectorized cosine similarity
+from Embeddings._similarity_utils import compute_all_similarities
+
+
+def load_lambda_hard_gates(config_path: str = "balancing/balancing_config.R") -> Dict[str, float]:
+    """Load canonical hard-gate thresholds from R config to avoid drift."""
+    default = {
+        "max_smd": 0.10,
+        "top10_share": 0.70,
+        "max_weight": 0.10,
+        "ess_frac": 0.02,
+        "ess_mult_treated": 1.5,
+    }
+    cmd = [
+        "Rscript",
+        "-e",
+        (
+            f"source('{config_path}'); "
+            "cfg <- get_diagnostics_config()$lambda_selection$hard_gates; "
+            "cat(paste(c(cfg$max_smd,cfg$top10_share,cfg$max_weight,cfg$ess_frac,cfg$ess_mult_treated), collapse=','))"
+        ),
+    ]
     try:
-        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
-    except ImportError:
-        logger.error("sklearn (scikit-learn) is required for vectorized similarity computation")
-        logger.error("Install with: pip install scikit-learn")
-        raise ImportError("sklearn not found. Install with: pip install scikit-learn")
-    
-    # Get masks and indices
-    treated_mask = embeddings_df['treated'] == 1
-    control_mask = embeddings_df['treated'] == 0
-    treated_indices = embeddings_df[treated_mask].index.tolist()
-    control_indices = embeddings_df[control_mask].index.tolist()
-    
-    # Extract embedding columns
-    embedding_cols = [col for col in embeddings_df.columns if col.startswith('band_')]
-    
-    # Extract treated and control embeddings
-    treated_embeddings = embeddings_df.loc[treated_mask, embedding_cols].values  # (n_treated, n_dims)
-    control_embeddings = embeddings_df.loc[control_mask, embedding_cols].values  # (n_control, n_dims)
-    
-    # DEBUG: Check for inf/nan in matrices
-    nan_in_treated = np.isnan(treated_embeddings).sum()
-    inf_in_treated = np.isinf(treated_embeddings).sum()
-    nan_in_control = np.isnan(control_embeddings).sum()
-    inf_in_control = np.isinf(control_embeddings).sum()
-    
-    if nan_in_treated > 0 or inf_in_treated > 0:
-        logger.warning(f"  Treated embeddings contain {nan_in_treated} NaN and {inf_in_treated} inf!")
-    if nan_in_control > 0 or inf_in_control > 0:
-        logger.warning(f"  Control embeddings contain {nan_in_control} NaN and {inf_in_control} inf!")
-    
-    # VECTORIZED: Compute all similarities at once
-    # Output shape: (n_treated, n_control)
-    logger.info(f"  Computing {len(treated_indices)} × {len(control_indices)} = {len(treated_indices) * len(control_indices):,} similarities...")
-    similarity_matrix = sklearn_cosine_similarity(treated_embeddings, control_embeddings)
-    
-    # Verify matrix dimensions match expectations
-    expected_shape = (len(treated_indices), len(control_indices))
-    if similarity_matrix.shape != expected_shape:
-        raise ValueError(f"Similarity matrix shape {similarity_matrix.shape} doesn't match expected {expected_shape}")
-    
-    # Check for NaN in results
-    nan_count = np.isnan(similarity_matrix).sum()
-    if nan_count > 0:
-        logger.warning(f"  {nan_count} NaN similarities detected, replacing with 0")
-        similarity_matrix = np.nan_to_num(similarity_matrix, nan=0.0)
-    
-    # Convert to same output format as original function
-    # Dictionary: treated_idx -> array of (control_idx, similarity) sorted descending
-    similarities = {}
-    for i, t_idx in enumerate(treated_indices):
-        # Get similarities for this treated pixel (row i)
-        sims = [(control_indices[j], similarity_matrix[i, j]) 
-                for j in range(len(control_indices))]
-        # Sort by similarity descending
-        sims.sort(key=lambda x: x[1], reverse=True)
-        similarities[t_idx] = np.array(sims)
-    
-    logger.info(f"  ✓ Computed similarities for {len(treated_indices)} treated pixels (vectorized)")
-    return similarities
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        vals = [float(x) for x in res.stdout.strip().split(',')]
+        if len(vals) == 5:
+            return {
+                "max_smd": vals[0],
+                "top10_share": vals[1],
+                "max_weight": vals[2],
+                "ess_frac": vals[3],
+                "ess_mult_treated": vals[4],
+            }
+    except Exception as exc:
+        logger.warning("Failed to load hard gates from %s (%s); using defaults", config_path, exc)
+    return default
 
 
 def get_k_nearest_union(similarities: Dict[int, np.ndarray], K: int) -> Set[int]:
@@ -165,6 +137,87 @@ def get_k_nearest_union(similarities: Dict[int, np.ndarray], K: int) -> Set[int]
         top_k = sims[:K, 0].astype(int)
         selected_controls.update(top_k)
     return selected_controls
+
+
+def get_k_pool_diagnostics(
+    similarities: Dict[int, np.ndarray],
+    K: int,
+    n_treated: int,
+    n_controls_full: int,
+) -> Dict[str, float]:
+    """Compute realized donor-pool and embedding support diagnostics for a given K."""
+    selected_controls = set()
+    all_topk_sim = []
+    per_treated_min = []
+    per_treated_median = []
+
+    for _, sims in similarities.items():
+        top_k = sims[:K, :]
+        selected_controls.update(top_k[:, 0].astype(int))
+        sim_vals = top_k[:, 1].astype(float)
+        if sim_vals.size > 0:
+            all_topk_sim.extend(sim_vals.tolist())
+            per_treated_min.append(float(np.min(sim_vals)))
+            per_treated_median.append(float(np.median(sim_vals)))
+
+    pool_size = len(selected_controls)
+    pool_prop_full = (pool_size / max(1, n_controls_full))
+    coverage_ratio = (pool_size / max(1, n_treated))
+
+    all_topk_arr = np.array(all_topk_sim, dtype=float) if all_topk_sim else np.array([np.nan])
+    min_arr = np.array(per_treated_min, dtype=float) if per_treated_min else np.array([np.nan])
+    med_arr = np.array(per_treated_median, dtype=float) if per_treated_median else np.array([np.nan])
+
+    return {
+        "K": int(K),
+        "pool_size": int(pool_size),
+        "pool_prop_full": float(pool_prop_full),
+        "coverage_ratio": float(coverage_ratio),
+        "support_similarity_min": float(np.nanmin(all_topk_arr)),
+        "support_similarity_p10": float(np.nanpercentile(all_topk_arr, 10)),
+        "support_similarity_median": float(np.nanmedian(all_topk_arr)),
+        "support_per_treated_min_p10": float(np.nanpercentile(min_arr, 10)),
+        "support_per_treated_median": float(np.nanmedian(med_arr)),
+    }
+
+
+def build_pool_diagnostics_table(
+    similarities: Dict[int, np.ndarray],
+    K_candidates: List[int],
+    n_treated: int,
+    n_controls_full: int,
+) -> pd.DataFrame:
+    rows = [
+        get_k_pool_diagnostics(similarities, K, n_treated=n_treated, n_controls_full=n_controls_full)
+        for K in sorted(set(K_candidates))
+    ]
+    return pd.DataFrame(rows).sort_values("K").reset_index(drop=True)
+
+
+def map_candidates_to_target_proportions(
+    pool_df: pd.DataFrame,
+    target_pool_proportions: List[float],
+) -> Tuple[List[int], pd.DataFrame]:
+    """Map target donor-pool proportions to nearest realized K points."""
+    if pool_df.empty:
+        return [], pd.DataFrame()
+
+    unique_targets = sorted(set(float(x) for x in target_pool_proportions if x > 0))
+    mapped_rows = []
+    for target in unique_targets:
+        idx = (pool_df["pool_prop_full"] - target).abs().idxmin()
+        row = pool_df.loc[idx].copy()
+        row["target_pool_prop_full"] = target
+        row["target_abs_error"] = abs(float(row["pool_prop_full"]) - target)
+        mapped_rows.append(row)
+
+    mapping_df = pd.DataFrame(mapped_rows)
+    if mapping_df.empty:
+        return [], mapping_df
+
+    mapping_df = mapping_df.sort_values(["target_pool_prop_full", "K"]).reset_index(drop=True)
+    mapped_k = sorted(set(mapping_df["K"].astype(int).tolist()))
+    return mapped_k, mapping_df
 
 
 def compute_elbow_metrics(similarities: Dict[int, np.ndarray], 
@@ -216,33 +269,39 @@ def filter_by_elbow(elbow_df: pd.DataFrame,
           → Δsim=[-0.005,-0.004,-0.061] → Elbow at K=50 (Δsim=-0.061 < -0.02)
           → Keep K=[10,20,30] (gradual decrease), drop K=50+ (sharp drop)
     """
-    logger.info(f"\nStep 1b: Filtering by elbow (drop threshold: {drop_threshold})...")
+    logger.info(f"\nStep 1b: Knee detection (replacing fragile elbow heuristic)...")
     elbow_df = elbow_df.sort_values('K')
-    similarities = elbow_df['mean_similarity'].values
+    similarities = elbow_df['mean_similarity'].values.astype(float)
     K_values = elbow_df['K'].values
-    # Compute marginal changes (similarity decreases as K increases)
-    marginal_gains = np.diff(similarities)  # Will be negative (similarity decreases)
-    # Find first K where similarity drops sharply (magnitude > threshold)
-    elbow_idx = None
-    for i, gain in enumerate(marginal_gains):
-        logger.info(f"  K={K_values[i]} → K={K_values[i+1]}: Δsim={gain:.4f}")
-        # Check if drop is LARGE (more negative than -threshold)
-        if gain < -drop_threshold:
-            elbow_idx = i + 1  # Stop BEFORE the sharp drop
-            logger.info(f"  ✂ Elbow detected at K={K_values[i+1]} (Δsim < -{drop_threshold})")
-            break
-    # If no elbow found, keep all K (no sharp drop detected)
-    if elbow_idx is None:
-        logger.info(f"  ℹ No sharp drop detected - keeping all K candidates")
-        filtered_K = K_values.tolist()
-    else:
-        filtered_K = K_values[:elbow_idx].tolist()
+    # If too few points, keep all
+    if len(K_values) < 3:
+        logger.info("  Too few K candidates for knee detection - keeping all")
+        return K_values.tolist()
+    # Normalize similarities to [0,1]
+    sim_min, sim_max = similarities.min(), similarities.max()
+    if sim_max - sim_min == 0:
+        logger.info("  Similarities constant - keeping all K candidates")
+        return K_values.tolist()
+    sims_norm = (similarities - sim_min) / (sim_max - sim_min)
+    # Line from first to last point
+    x = np.arange(len(sims_norm)).astype(float)
+    x0, y0 = x[0], sims_norm[0]
+    x1, y1 = x[-1], sims_norm[-1]
+    # Perpendicular distance from each point to the line
+    denom = np.hypot(x1 - x0, y1 - y0)
+    if denom == 0:
+        logger.info("  Degenerate end points for knee detection - keeping all")
+        return K_values.tolist()
+    distances = np.abs((y1 - y0) * x - (x1 - x0) * sims_norm + x1 * y0 - y1 * x0) / denom
+    knee_idx = int(np.argmax(distances))
+    logger.info(f"  Knee detected at index {knee_idx} (K={K_values[knee_idx]})")
+    # Keep K values up to and including knee index
+    filtered_K = K_values[: (knee_idx + 1)].tolist()
     logger.info(f"  Kept K values: {filtered_K}")
     return filtered_K
 
 
-def check_pool_sizes(similarities: Dict[int, np.ndarray],
-                     K_candidates: List[int],
+def check_pool_sizes(pool_df: pd.DataFrame,
                      n_treated: int,
                      min_ratio: int = 10) -> List[int]:
     """
@@ -255,10 +314,10 @@ def check_pool_sizes(similarities: Dict[int, np.ndarray],
     logger.info(f"\nStep 2: Checking pool sizes (min required: {min_ratio} × {n_treated} = {min_ratio * n_treated})...")
     min_controls_required = min_ratio * n_treated
     valid_K = []
-    for K in K_candidates:
-        selected_controls = get_k_nearest_union(similarities, K)
-        pool_size = len(selected_controls)
-        reduction_pct = 100 * (1 - pool_size / 50000)  # assuming ~50k baseline 
+    for _, row in pool_df.sort_values("K").iterrows():
+        K = int(row["K"])
+        pool_size = int(row["pool_size"])
+        reduction_pct = 100 * (1 - float(row["pool_prop_full"]))
         is_valid = pool_size >= min_controls_required
         status = "✓ VALID" if is_valid else "✗ TOO SMALL"
         logger.info(f"  K={K}: {pool_size} unique controls ({reduction_pct:.1f}% reduction) {status}")
@@ -276,7 +335,10 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
                       year: int,
                       output_prefix: str,
                       train_years: List[int],
-                      test_years: List[int]) -> Dict:
+                      test_years: List[int],
+                      experiment_name: str = "full_pool",
+                      analysis_base_dir: str = "data/processed_data/rev_analysis_low",
+                      save_full_weights: bool = False) -> Dict:
     """
     Run CBPS with cross-validation to compute RMSPE
     
@@ -335,8 +397,7 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
     selected_units = embeddings_df.loc[list(selected_controls), 'unit'].tolist()
     
     # Save selected controls to permanent file for diagnostics
-    from config import CBPS_INTEGRATION_DIR
-    output_dir = CBPS_INTEGRATION_DIR / str(year)
+    output_dir = CBPS_INTEGRATION_DIR / experiment_name / str(year)
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_units_file = output_dir / f"selected_controls_{output_prefix}_{year}.csv"
     pd.DataFrame({'unit': selected_units}).to_csv(selected_units_file, index=False)
@@ -368,8 +429,12 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
             str(train_years[0]),
             str(train_years[-1]),
             str(test_years[0]),
-            str(test_years[-1])
+            str(test_years[-1]),
+            "--experiment-name", experiment_name,
+            "--analysis-base-dir", analysis_base_dir,
+            "--save-full-weights", "true" if save_full_weights else "false",
         ]
+        # R runner enforces diagnostics and will raise on degenerate weights
         logger.info(f"    Calling R CBPS: {' '.join(cmd)}")
         result = subprocess.run(
             cmd,
@@ -383,9 +448,8 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
             logger.error(f"STDERR: {result.stderr}")
             raise RuntimeError(f"R CBPS script failed: {result.stderr or result.stdout}")
         # Parse R output
-        from config import CBPS_INTEGRATION_DIR
         # Look in year-specific subdirectory
-        metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+        metrics_file = CBPS_INTEGRATION_DIR / experiment_name / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
         if not metrics_file.exists():
             raise FileNotFoundError(f"CBPS metrics file not created: {metrics_file}")
         metrics = pd.read_csv(metrics_file)
@@ -398,8 +462,16 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
         return {
             'rmse': float(metrics['rmse_test'].iloc[0]),
             'rmse_train': float(metrics['rmse_train'].iloc[0]),
+            'median_RMSE': float(metrics['median_rmse_test'].iloc[0]) if 'median_rmse_test' in metrics.columns else np.nan,
+            'p90_RMSE': float(metrics['p90_rmse_test'].iloc[0]) if 'p90_rmse_test' in metrics.columns else np.nan,
+            'max_RMSE': float(metrics['max_rmse_test'].iloc[0]) if 'max_rmse_test' in metrics.columns else np.nan,
             'max_balance_std': float(metrics['max_balance_std'].iloc[0]),
             'mean_balance_std': float(metrics['mean_balance_std'].iloc[0]),
+            'ess_control': float(metrics['ess_control'].iloc[0]) if 'ess_control' in metrics.columns else np.nan,
+            'ess_ratio': float(metrics['ess_ratio'].iloc[0]) if 'ess_ratio' in metrics.columns else np.nan,
+            'top10_share': float(metrics['top10_share'].iloc[0]) if 'top10_share' in metrics.columns else np.nan,
+            'max_weight_share': float(metrics['max_weight_share'].iloc[0]) if 'max_weight_share' in metrics.columns else np.nan,
+            'runtime_seconds': float(metrics['runtime_seconds'].iloc[0]) if 'runtime_seconds' in metrics.columns else np.nan,
             'convergence': int(metrics['converged'].iloc[0]),
             'n_controls_used': int(metrics['n_control'].iloc[0])
         }
@@ -410,7 +482,11 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
 
 def compute_k_value(K: int, similarities: Dict[int, np.ndarray], 
                     embeddings_df: pd.DataFrame, year: int,
-                    train_years: List[int], test_years: List[int]) -> Dict:
+                    train_years: List[int], test_years: List[int], output_tag: str = "",
+                    experiment_name: str = "full_pool",
+                    analysis_base_dir: str = "data/processed_data/rev_analysis_low",
+                    save_full_weights: bool = False,
+                    n_controls_full: Optional[int] = None) -> Dict:
     """
     Worker function to compute CBPS metrics for a specific K value
     Designed for parallel execution via ThreadPoolExecutor
@@ -429,7 +505,14 @@ def compute_k_value(K: int, similarities: Dict[int, np.ndarray],
     try:
         # Get K-nearest controls
         selected_controls = get_k_nearest_union(similarities, K)
-        output_prefix = f"k{K}"
+        n_controls_full = int(n_controls_full if n_controls_full is not None else (embeddings_df['treated'] == 0).sum())
+        pool_info = get_k_pool_diagnostics(
+            similarities,
+            K,
+            n_treated=len(similarities),
+            n_controls_full=n_controls_full,
+        )
+        output_prefix = f"k{K}" + (f"_{output_tag}" if output_tag else "")
         
         # Run CBPS cross-validation
         result = run_cbps_crossval(
@@ -438,17 +521,34 @@ def compute_k_value(K: int, similarities: Dict[int, np.ndarray],
             year=year,
             output_prefix=output_prefix,
             train_years=train_years,
-            test_years=test_years
+            test_years=test_years,
+            experiment_name=experiment_name,
+            analysis_base_dir=analysis_base_dir,
+            save_full_weights=save_full_weights,
         )
+        
         
         # Return success result
         return {
             'K': K,
-            'pool_size': len(selected_controls),
+            'pool_size': int(pool_info['pool_size']),
+            'pool_prop_full': float(pool_info['pool_prop_full']),
+            'coverage_ratio': float(pool_info['coverage_ratio']),
+            'support_similarity_min': float(pool_info['support_similarity_min']),
+            'support_similarity_p10': float(pool_info['support_similarity_p10']),
+            'support_similarity_median': float(pool_info['support_similarity_median']),
             'rmse': result['rmse'],
             'rmse_train': result['rmse_train'],
+            'median_RMSE': result.get('median_RMSE', np.nan),
+            'p90_RMSE': result.get('p90_RMSE', np.nan),
+            'max_RMSE': result.get('max_RMSE', np.nan),
             'max_balance_std': result['max_balance_std'],
             'mean_balance_std': result['mean_balance_std'],
+            'ess_control': result.get('ess_control', np.nan),
+            'ess_ratio': result.get('ess_ratio', np.nan),
+            'top10_share': result.get('top10_share', np.nan),
+            'max_weight_share': result.get('max_weight_share', np.nan),
+            'runtime_seconds': result.get('runtime_seconds', np.nan),
             'convergence': result['convergence'],
             'n_controls_used': result['n_controls_used'],
             'success': True,
@@ -463,13 +563,107 @@ def compute_k_value(K: int, similarities: Dict[int, np.ndarray],
         }
 
 
+def select_k_with_plateau(rmse_df: pd.DataFrame,
+                          n_treated: int,
+                          full_control_pool: int,
+                          rmse_plateau_mult: float = 1.05,
+                          ess_plateau_frac: float = 0.90,
+                          gates: Optional[Dict[str, float]] = None) -> Dict:
+    """
+    Select K by feasibility gates (aligned with hard-gate intent), plateau region,
+    then lexicographic ranking that prioritizes precision/stability before pool size.
+    """
+    d = rmse_df.copy()
+    rmse_col = 'median_RMSE' if ('median_RMSE' in d.columns and d['median_RMSE'].notna().any()) else 'rmse'
+    gates = gates or {}
+    gate_max_smd = float(gates.get("max_smd", 0.10))
+    gate_top10_share = float(gates.get("top10_share", 0.70))
+    gate_max_weight_share = float(gates.get("max_weight", 0.10))
+    gate_ess_frac_floor = float(gates.get("ess_frac", 0.02))
+    gate_ess_mult_treated = float(gates.get("ess_mult_treated", 1.5))
+
+    d['pool_prop_full'] = d['pool_size'] / max(1, full_control_pool)
+    d['coverage_ratio'] = d['pool_size'] / max(1, n_treated)
+    d['required_ess_floor'] = np.maximum(gate_ess_mult_treated * n_treated,
+                                         gate_ess_frac_floor * d['pool_size'])
+    d['feasibility_reasons'] = ''
+
+    has_required = all(col in d.columns for col in ['max_balance_std', 'ess_control', 'top10_share'])
+    if has_required:
+        feasible = (
+            (d['max_balance_std'] <= gate_max_smd) &
+            (d['ess_control'] >= d['required_ess_floor']) &
+            (d['top10_share'] <= gate_top10_share)
+        )
+        if 'max_weight_share' in d.columns:
+            feasible = feasible & (d['max_weight_share'] <= gate_max_weight_share)
+
+        reasons = []
+        reasons.append(np.where(d['max_balance_std'] > gate_max_smd, 'max_smd', ''))
+        reasons.append(np.where(d['ess_control'] < d['required_ess_floor'], 'ess_floor', ''))
+        reasons.append(np.where(d['top10_share'] > gate_top10_share, 'top10_share', ''))
+        if 'max_weight_share' in d.columns:
+            reasons.append(np.where(d['max_weight_share'] > gate_max_weight_share, 'max_weight', ''))
+
+        reason_df = pd.DataFrame(reasons).T
+        d['feasibility_reasons'] = reason_df.apply(
+            lambda x: ';'.join([v for v in x.tolist() if isinstance(v, str) and v]), axis=1
+        )
+        d['feasible'] = feasible
+    else:
+        logger.warning("Feasibility columns missing (max_balance_std/ess_control/top10_share); using convergence-only fallback.")
+        d['feasible'] = (d.get('convergence', 0) == 1)
+        d['feasibility_reasons'] = np.where(d['feasible'], '', 'missing_required_columns')
+
+    feasible_df = d[d['feasible']].copy()
+    if feasible_df.empty:
+        logger.warning("No feasible K found by hard gates; falling back to minimum RMSE.")
+        pick = d.sort_values([rmse_col, 'pool_size', 'K']).iloc[0]
+        return {'chosen_K': int(pick['K']), 'selection_mode': 'fallback_min_rmse', 'table': d}
+
+    rmse_best = feasible_df[rmse_col].min()
+    if 'ess_control' in feasible_df.columns and feasible_df['ess_control'].notna().any():
+        ess_best = feasible_df['ess_control'].max()
+        plateau_df = feasible_df[
+            (feasible_df[rmse_col] <= rmse_plateau_mult * rmse_best) &
+            (feasible_df['ess_control'] >= ess_plateau_frac * ess_best)
+        ].copy()
+    else:
+        plateau_df = feasible_df[feasible_df[rmse_col] <= rmse_plateau_mult * rmse_best].copy()
+
+    if plateau_df.empty:
+        plateau_df = feasible_df.nsmallest(1, rmse_col).copy()
+
+    # Constrained lexicographic ranking inside plateau:
+    # 1) maximize ESS, 2) minimize concentration, 3) choose smallest donor pool.
+    sort_cols = ['ess_control', 'top10_share', 'max_weight_share', 'pool_size', 'K']
+    ascending = [False, True, True, True, True]
+    for col in ['max_weight_share']:
+        if col not in plateau_df.columns:
+            plateau_df[col] = np.nan
+    pick = plateau_df.sort_values(sort_cols, ascending=ascending, na_position='last').iloc[0]
+    return {
+        'chosen_K': int(pick['K']),
+        'selection_mode': 'feasible_plateau_smallest_pool',
+        'table': d,
+        'rmse_best': float(rmse_best)
+    }
+
+
 def select_optimal_k(similarities: Dict[int, np.ndarray],
                     embeddings_df: pd.DataFrame,
                     K_candidates: List[int],
                     year: int,
                     min_ratio: int = 10,
                     force_recompute: bool = False,
-                    max_workers: int = 6) -> Dict:
+                    max_workers: int = 6,
+                    output_tag: str = "",
+                    experiment_name: str = "full_pool",
+                    analysis_base_dir: str = "data/processed_data/rev_analysis_low",
+                    save_full_weights: bool = False,
+                    target_pool_proportions: Optional[List[float]] = None,
+                    include_full_pool: bool = True,
+                    gates: Optional[Dict[str, float]] = None) -> Dict:
     """
     Complete K selection pipeline
     Args:
@@ -493,10 +687,34 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     logger.info(f"K candidates: {K_candidates}")
     logger.info(f"Min control ratio: {min_ratio}× treated")
     logger.info(f"Parallelization: {max_workers} workers")
+
+    max_k_possible = min([arr.shape[0] for arr in similarities.values()])
+    candidate_set = set(int(k) for k in K_candidates if int(k) > 0)
+    if include_full_pool:
+        candidate_set.add(int(max_k_possible))
+    K_candidates_eff = sorted(candidate_set)
+
+    pool_df = build_pool_diagnostics_table(
+        similarities,
+        K_candidates_eff,
+        n_treated=n_treated,
+        n_controls_full=n_controls,
+    )
+
+    mapping_df = pd.DataFrame()
+    if target_pool_proportions:
+        mapped_k, mapping_df = map_candidates_to_target_proportions(pool_df, target_pool_proportions)
+        if mapped_k:
+            K_candidates_eff = mapped_k
+
+    pool_df = pool_df[pool_df['K'].isin(K_candidates_eff)].copy().reset_index(drop=True)
+    pool_lookup = pool_df.set_index('K').to_dict(orient='index')
+
+    logger.info("Evaluating realized donor-pool targets at K values: %s", K_candidates_eff)
     # Step 1: Compute similarity metrics for each K (for diagnostics only)
-    elbow_df = compute_elbow_metrics(similarities, K_candidates)
+    elbow_df = compute_elbow_metrics(similarities, K_candidates_eff)
     # Step 2: Check pool sizes (only filter by pool size)
-    valid_K = check_pool_sizes(similarities, K_candidates, n_treated, min_ratio)
+    valid_K = check_pool_sizes(pool_df, n_treated, min_ratio)
     if not valid_K:
         logger.error("No K values produce large enough control pools!")
         logger.error(f"Try smaller min_ratio (current: {min_ratio}) or larger K values")
@@ -504,20 +722,19 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     logger.info(f"\nValid K values for RMSPE testing: {valid_K}")
 
     # Step 3: Run CBPS + RMSPE cross-validation
-    from config import CBPS_INTEGRATION_DIR
     # If force_recompute, delete all cached CBPS metrics files for this year/K
     if force_recompute:
-        for K in K_candidates:
-            output_prefix = f"k{K}"
-            metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+        for K in K_candidates_eff:
+            output_prefix = f"k{K}" + (f"_{output_tag}" if output_tag else "")
+            metrics_file = CBPS_INTEGRATION_DIR / experiment_name / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
             if metrics_file.exists():
                 logger.info(f"🗑️  Deleting cached CBPS metrics for K={K} (--force-recompute)")
                 metrics_file.unlink()
     K_to_compute = []
     K_cached = []
     for K in valid_K:
-        output_prefix = f"k{K}"
-        metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+        output_prefix = f"k{K}" + (f"_{output_tag}" if output_tag else "")
+        metrics_file = CBPS_INTEGRATION_DIR / experiment_name / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
         if metrics_file.exists() and not force_recompute:
             K_cached.append(K)
         else:
@@ -536,18 +753,31 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     if K_cached:
         logger.info(f"\n  Loading cached results...")
         for K in K_cached:
-            output_prefix = f"k{K}"
-            metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+            output_prefix = f"k{K}" + (f"_{output_tag}" if output_tag else "")
+            metrics_file = CBPS_INTEGRATION_DIR / experiment_name / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
             try:
                 metrics = pd.read_csv(metrics_file)
-                selected_controls = get_k_nearest_union(similarities, K)
+                pool_info = pool_lookup.get(K, {})
                 rmse_results.append({
                     'K': K,
-                    'pool_size': len(selected_controls),
+                    'pool_size': int(pool_info.get('pool_size', np.nan)),
+                    'pool_prop_full': float(pool_info.get('pool_prop_full', np.nan)),
+                    'coverage_ratio': float(pool_info.get('coverage_ratio', np.nan)),
+                    'support_similarity_min': float(pool_info.get('support_similarity_min', np.nan)),
+                    'support_similarity_p10': float(pool_info.get('support_similarity_p10', np.nan)),
+                    'support_similarity_median': float(pool_info.get('support_similarity_median', np.nan)),
                     'rmse': float(metrics['rmse_test'].iloc[0]),
                     'rmse_train': float(metrics['rmse_train'].iloc[0]),
+                    'median_RMSE': float(metrics['median_rmse_test'].iloc[0]) if 'median_rmse_test' in metrics.columns else np.nan,
+                    'p90_RMSE': float(metrics['p90_rmse_test'].iloc[0]) if 'p90_rmse_test' in metrics.columns else np.nan,
+                    'max_RMSE': float(metrics['max_rmse_test'].iloc[0]) if 'max_rmse_test' in metrics.columns else np.nan,
                     'max_balance_std': float(metrics['max_balance_std'].iloc[0]),
                     'mean_balance_std': float(metrics['mean_balance_std'].iloc[0]),
+                    'ess_control': float(metrics['ess_control'].iloc[0]) if 'ess_control' in metrics.columns else np.nan,
+                    'ess_ratio': float(metrics['ess_ratio'].iloc[0]) if 'ess_ratio' in metrics.columns else np.nan,
+                    'top10_share': float(metrics['top10_share'].iloc[0]) if 'top10_share' in metrics.columns else np.nan,
+                    'max_weight_share': float(metrics['max_weight_share'].iloc[0]) if 'max_weight_share' in metrics.columns else np.nan,
+                    'runtime_seconds': float(metrics['runtime_seconds'].iloc[0]) if 'runtime_seconds' in metrics.columns else np.nan,
                     'convergence': int(metrics['converged'].iloc[0]),
                     'n_controls_used': int(metrics['n_control'].iloc[0])
                 })
@@ -567,8 +797,14 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             embeddings_df=embeddings_df,
             year=year,
             train_years=list(range(2000, 2011)),
-            test_years=list(range(2011, 2016))
+            test_years=list(range(2011, 2016)),
+            output_tag=output_tag,
+            experiment_name=experiment_name,
+            analysis_base_dir=analysis_base_dir,
+            save_full_weights=save_full_weights,
+            n_controls_full=n_controls,
         )
+        # (strict removed) R runner will always fail on degenerate weights
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             future_to_k = {executor.submit(compute_func, K): K for K in K_to_compute}
             completed = 0
@@ -603,6 +839,16 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         logger.error("\nCheck R script output above for details.")
         return None    
     rmse_df = pd.DataFrame(rmse_results)
+    # Standardized reporting aliases (pre-treatment diagnostics only).
+    rmse_df['N_control_K'] = rmse_df.get('pool_size', np.nan)
+    if 'median_RMSE' not in rmse_df.columns:
+        rmse_df['median_RMSE'] = rmse_df.get('rmse', np.nan)
+    if 'p90_RMSE' not in rmse_df.columns:
+        rmse_df['p90_RMSE'] = np.nan
+    if 'max_RMSE' not in rmse_df.columns:
+        rmse_df['max_RMSE'] = np.nan
+    rmse_df['max_abs_SMD'] = rmse_df.get('max_balance_std', np.nan)
+    rmse_df['ESS_control'] = rmse_df.get('ess_control', np.nan)
     logger.info(f"\n{'='*80}")
     logger.info(f"CBPS CROSS-VALIDATION SUMMARY")
     logger.info(f"{'='*80}")
@@ -614,22 +860,32 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         logger.warning(f"  Failed K values: {sorted(failed_K)}")
         logger.warning(f"  (Check logs above for error details)")
     logger.info("")    
-    # Step 4: Select optimal K
-    optimal_idx = rmse_df['rmse'].idxmin()
-    optimal_K = rmse_df.loc[optimal_idx, 'K']
-    optimal_rmse = rmse_df.loc[optimal_idx, 'rmse']   
+    # Step 4: Select optimal K (feasible gates + plateau + smallest donor pool)
+    selection = select_k_with_plateau(
+        rmse_df=rmse_df,
+        n_treated=n_treated,
+        full_control_pool=n_controls,
+        gates=gates,
+    )
+    optimal_K = selection['chosen_K']
+    optimal_rmse = rmse_df.loc[rmse_df['K'] == optimal_K, 'rmse'].iloc[0]
+    optimal_pool = rmse_df.loc[rmse_df['K'] == optimal_K, 'pool_size'].iloc[0]
     logger.info(f"\n{'='*80}")
     logger.info(f"OPTIMAL K SELECTED: {optimal_K}")
+    logger.info(f"Selection mode: {selection['selection_mode']}")
     logger.info(f"Pre-treatment RMSE: {optimal_rmse:.4f}")
-    logger.info(f"Control pool size: {rmse_df.loc[optimal_idx, 'pool_size']}")
+    logger.info(f"Control pool size: {optimal_pool}")
     logger.info(f"{'='*80}\n")    
     return {
         'optimal_K': int(optimal_K),
         'optimal_rmse': float(optimal_rmse),
+        'selection_mode': selection['selection_mode'],
         'elbow_metrics': elbow_df,
-        'rmse_results': rmse_df,
+        'rmse_results': selection['table'],
         'valid_K_values': valid_K,
-        'all_similarities': similarities
+        'all_similarities': similarities,
+        'pool_diagnostics': pool_df,
+        'pool_target_mapping': mapping_df,
     }
 def main():
     """Run optimal K selection on embeddings data
@@ -664,8 +920,20 @@ Examples:
         '--k-values',
         type=int,
         nargs='+',
-        default=[20, 30, 40, 50, 75, 100, 150, 200],
-        help='K candidates to test (default: 20 30 40 50 75 100 150 200)'
+        default=[5, 10, 20, 30, 50, 100],
+        help='Raw K candidates used for realized donor-pool mapping (default: 5 10 20 30 50 100)'
+    )
+    parser.add_argument(
+        '--target-pool-proportions',
+        type=float,
+        nargs='+',
+        default=[0.005, 0.01, 0.02, 0.05, 0.10, 0.20, 1.0],
+        help='Target donor-pool proportions of full controls to evaluate (default: 0.005 0.01 0.02 0.05 0.10 0.20 1.0)'
+    )
+    parser.add_argument(
+        '--no-full-pool',
+        action='store_true',
+        help='Do not automatically include full-pool candidate in proportion mapping'
     )
     parser.add_argument(
         '--min-ratio',
@@ -683,7 +951,49 @@ Examples:
         type=int,
         default=6,
         help='Maximum number of parallel workers for CBPS computation (default: 6)'
-    )    
+    )
+    parser.add_argument(
+        '--treated-subsample-frac',
+        type=float,
+        default=1.0,
+        help='Fraction of treated units to keep for robustness runs (default: 1.0)'
+    )
+    parser.add_argument(
+        '--random-seed',
+        type=int,
+        default=None,
+        help='Random seed used when treated-subsample-frac < 1.0'
+    )
+    parser.add_argument(
+        '--output-tag',
+        type=str,
+        default='',
+        help='Optional suffix tag for output files (e.g., boot1)'
+    )
+    parser.add_argument(
+        '--experiment-name',
+        type=str,
+        default='full_pool',
+        help='Experiment namespace for input/output isolation (default: full_pool)'
+    )
+    parser.add_argument(
+        '--analysis-base-dir',
+        type=str,
+        default='data/processed_data/rev_analysis_low',
+        help='Base directory for analysis_treated inputs (default: data/processed_data/rev_analysis_low)'
+    )
+    parser.add_argument(
+        '--save-full-weights',
+        action='store_true',
+        help='Also save full unit-level weights CSV for each K (default: off to limit files)'
+    )
+    parser.add_argument(
+        '--config-path',
+        type=str,
+        default='balancing/balancing_config.R',
+        help='Path to canonical balancing config used to load hard-gate thresholds'
+    )
+    # NOTE: strict mode removed — R runner now always fails on degenerate weights
     args = parser.parse_args()
     year = args.year    
     logger.info(f"Processing year: {year}")    
@@ -741,10 +1051,38 @@ Examples:
     # This ensures DataFrame indices match positional indices
     embeddings_df = embeddings_df.reset_index(drop=True)
     logger.info(f"  ✓ Reset index to ensure sequential indexing")
+
+    # Optional robustness mode: subsample treated units while keeping full controls.
+    subsample_frac = float(args.treated_subsample_frac)
+    if subsample_frac <= 0 or subsample_frac > 1:
+        logger.error("--treated-subsample-frac must be in (0, 1].")
+        return 1
+    if subsample_frac < 1.0:
+        treated_df = embeddings_df[embeddings_df['treated'] == 1].copy()
+        control_df = embeddings_df[embeddings_df['treated'] == 0].copy()
+        n_treated = len(treated_df)
+        if n_treated == 0:
+            logger.error("No treated units available for subsampling.")
+            return 1
+        n_keep = max(1, int(np.ceil(subsample_frac * n_treated)))
+        treated_sub = treated_df.sample(n=n_keep, random_state=args.random_seed, replace=False)
+        embeddings_df = pd.concat([treated_sub, control_df], axis=0, ignore_index=True)
+        embeddings_df = embeddings_df.reset_index(drop=True)
+        logger.info(
+            "  ✓ Treated subsample enabled: kept %s/%s treated units (frac=%.3f, seed=%s)",
+            n_keep,
+            n_treated,
+            subsample_frac,
+            args.random_seed,
+        )
     
     # Step 1: Compute all similarities (one-time computation with caching)
-    from config import K_SELECTION_DIR
-    similarities_cache = K_SELECTION_DIR / str(year) / f"similarities_cache_{year}.npy"
+    tag_suffix = f"_{args.output_tag}" if args.output_tag else ""
+    robust_suffix = ""
+    if subsample_frac < 1.0:
+        seed_label = "na" if args.random_seed is None else str(args.random_seed)
+        robust_suffix = f"_sub{int(round(subsample_frac * 1000)):03d}_seed{seed_label}"
+    similarities_cache = K_SELECTION_DIR / args.experiment_name / str(year) / f"similarities_cache_{year}{robust_suffix}.npy"
     similarities_cache.parent.mkdir(parents=True, exist_ok=True)
     
     # Delete cache if force recompute requested
@@ -779,6 +1117,12 @@ Examples:
     min_ratio = args.min_ratio    
     logger.info(f"K candidates: {K_candidates}")
     logger.info(f"Min control ratio: {min_ratio}× treated (CBPS stability requirement)")
+
+    gates = load_lambda_hard_gates(args.config_path)
+    logger.info(
+        "Loaded hard gates from config: max_smd=%.3f top10_share=%.3f max_weight=%.3f ess_frac=%.3f ess_mult_treated=%.3f",
+        gates['max_smd'], gates['top10_share'], gates['max_weight'], gates['ess_frac'], gates['ess_mult_treated']
+    )
     
     results = select_optimal_k(
         similarities,
@@ -787,19 +1131,54 @@ Examples:
         year=year,
         min_ratio=min_ratio,
         force_recompute=args.force_recompute,
-        max_workers=args.max_workers
+        max_workers=args.max_workers,
+        output_tag=args.output_tag,
+        experiment_name=args.experiment_name,
+        analysis_base_dir=args.analysis_base_dir,
+        save_full_weights=args.save_full_weights,
+        target_pool_proportions=args.target_pool_proportions,
+        include_full_pool=not args.no_full_pool,
+        gates=gates,
     )    
     if results is None:
         return 1   
     # Save results
-    from config import K_SELECTION_DIR, CBPS_INTEGRATION_DIR
-    output_dir = K_SELECTION_DIR / str(year)
-    output_dir.mkdir(parents=True, exist_ok=True)    
-    results['elbow_metrics'].to_csv(output_dir / "k_selection_elbow.csv", index=False)
-    results['rmse_results'].to_csv(output_dir / "k_selection_rmse.csv", index=False)    
+    output_dir = K_SELECTION_DIR / args.experiment_name / str(year)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    elbow_name = f"k_selection_elbow{tag_suffix}.csv"
+    rmse_name = f"k_selection_rmse{tag_suffix}.csv"
+    pool_name = f"k_selection_pool_diagnostics{tag_suffix}.csv"
+    mapping_name = f"k_selection_pool_target_mapping{tag_suffix}.csv"
+    summary_name = f"k_selection_summary{tag_suffix}.json"
+    results['elbow_metrics'].to_csv(output_dir / elbow_name, index=False)
+    results['rmse_results'].to_csv(output_dir / rmse_name, index=False)
+    if 'pool_diagnostics' in results and isinstance(results['pool_diagnostics'], pd.DataFrame):
+        results['pool_diagnostics'].to_csv(output_dir / pool_name, index=False)
+    if 'pool_target_mapping' in results and isinstance(results['pool_target_mapping'], pd.DataFrame):
+        results['pool_target_mapping'].to_csv(output_dir / mapping_name, index=False)
+
+    summary_payload = {
+        'year': int(year),
+        'optimal_K': int(results['optimal_K']),
+        'optimal_rmse': float(results['optimal_rmse']),
+        'selection_mode': results.get('selection_mode', 'unknown'),
+        'treated_subsample_frac': subsample_frac,
+        'random_seed': args.random_seed,
+        'output_tag': args.output_tag,
+        'k_values': [int(k) for k in K_candidates],
+        'target_pool_proportions': [float(x) for x in args.target_pool_proportions],
+        'include_full_pool': not args.no_full_pool,
+        'hard_gates': gates,
+    }
+    with open(output_dir / summary_name, 'w', encoding='utf-8') as f:
+        json.dump(summary_payload, f, indent=2)
+
     logger.info(f"\nResults saved to {output_dir}/")
-    logger.info(f"  - k_selection_elbow.csv (similarity by K)")
-    logger.info(f"  - k_selection_rmse.csv (RMSPE by K)")
+    logger.info(f"  - {elbow_name} (similarity by K)")
+    logger.info(f"  - {rmse_name} (RMSPE by K)")
+    logger.info(f"  - {pool_name} (realized donor pool and support diagnostics)")
+    logger.info(f"  - {mapping_name} (target proportion to realized K mapping)")
+    logger.info(f"  - {summary_name} (selection summary)")
     
     logger.info("\n" + "="*80)
     logger.info("NEXT STEPS:")

@@ -316,6 +316,110 @@ calculate_pretreatment_rmse <- function(weights_df,
     rmse_test <- NA_real_
   }
   
+  # --------------------------------------------------------------------------
+  # Per-treated RMSE diagnostics: compare each treated unit's outcome trajectory
+  # against the weighted control synthetic trajectory by year.
+  # --------------------------------------------------------------------------
+  unit_rmse_summary <- list(
+    median_rmse_train = NA_real_,
+    p90_rmse_train = NA_real_,
+    max_rmse_train = NA_real_,
+    median_rmse_test = NA_real_,
+    p90_rmse_test = NA_real_,
+    max_rmse_test = NA_real_,
+    n_treated_with_rmse_train = 0L,
+    n_treated_with_rmse_test = 0L
+  )
+
+  # Build unit-year panel for treated outcomes and weighted-control synthetic outcomes.
+  fire_base <- readRDS(firms_rds_path)
+  if (inherits(fire_base, "sf")) {
+    if (requireNamespace("sf", quietly = TRUE)) {
+      coords_try <- try(sf::st_coordinates(fire_base), silent = TRUE)
+      if (!inherits(coords_try, "try-error") && is.matrix(coords_try) && ncol(coords_try) >= 2) {
+        if (!"LONGITUDE" %in% colnames(fire_base)) fire_base$LONGITUDE <- coords_try[,1]
+        if (!"LATITUDE" %in% colnames(fire_base)) fire_base$LATITUDE <- coords_try[,2]
+      }
+      fire_base <- sf::st_drop_geometry(fire_base)
+    } else {
+      fire_base <- as.data.frame(fire_base)
+    }
+  }
+  is_sfc_like <- sapply(fire_base, function(col) inherits(col, "sfc") || any(grepl("sfc", class(col), fixed = TRUE)) || is.list(col))
+  if (any(is_sfc_like)) fire_base <- fire_base[, !is_sfc_like, drop = FALSE]
+
+  fire_base$unit <- paste0(fire_base$LATITUDE, fire_base$LONGITUDE)
+  fire_base$has.hifire95 <- 0L
+  fire_base$has.hifire95[!is.na(fire_base$max_FRP) & fire_base$max_FRP >= 1000] <- 1L
+
+  if (!('unit' %in% names(weights_df))) {
+    if ('LATITUDE' %in% names(weights_df) && 'LONGITUDE' %in% names(weights_df)) {
+      weights_df$unit <- paste0(weights_df$LATITUDE, weights_df$LONGITUDE)
+    }
+  }
+
+  treated_units <- unique(weights_df$unit[weights_df$treated == 1])
+  control_units <- unique(weights_df$unit[weights_df$treated == 0])
+
+  panel_years <- sort(unique(all_years))
+  if (length(panel_years) > 0 && length(treated_units) > 0) {
+    panel <- expand.grid(
+      year = panel_years,
+      unit = treated_units,
+      stringsAsFactors = FALSE
+    )
+
+    treated_obs <- fire_base[fire_base$unit %in% treated_units & fire_base$year %in% panel_years, c("year", "unit", "has.hifire95"), drop = FALSE]
+    panel <- merge(panel, treated_obs, by = c("year", "unit"), all.x = TRUE, sort = FALSE)
+    panel$has.hifire95[is.na(panel$has.hifire95)] <- 0
+
+    control_obs <- fire_base[fire_base$unit %in% control_units & fire_base$year %in% panel_years, c("year", "unit", "has.hifire95"), drop = FALSE]
+    control_w <- weights_df[weights_df$unit %in% control_units, c("unit", "weight"), drop = FALSE]
+    control_obs <- merge(control_obs, control_w, by = "unit", all.x = TRUE, sort = FALSE)
+    control_obs$weight_hifire95 <- control_obs$weight * control_obs$has.hifire95
+
+    synth <- control_obs %>%
+      dplyr::group_by(year) %>%
+      dplyr::summarise(
+        synth_hifire95 = ifelse(sum(weight, na.rm = TRUE) > 0,
+                                sum(weight_hifire95, na.rm = TRUE) / sum(weight, na.rm = TRUE),
+                                NA_real_),
+        .groups = "drop"
+      )
+
+    panel <- merge(panel, synth, by = "year", all.x = TRUE, sort = FALSE)
+    panel$sq_err <- (panel$has.hifire95 - panel$synth_hifire95)^2
+
+    summarize_unit_rmse <- function(df_in, years_vec) {
+      sub <- df_in[df_in$year %in% years_vec, , drop = FALSE]
+      if (nrow(sub) == 0) return(list(vals = numeric(0)))
+      rmse_i <- sub %>%
+        dplyr::group_by(unit) %>%
+        dplyr::summarise(
+          rmse_i = ifelse(all(is.na(sq_err)), NA_real_, sqrt(mean(sq_err, na.rm = TRUE))),
+          .groups = "drop"
+        )
+      vals <- rmse_i$rmse_i[is.finite(rmse_i$rmse_i)]
+      list(vals = vals)
+    }
+
+    train_vals <- summarize_unit_rmse(panel, train_years_vec)$vals
+    test_vals <- summarize_unit_rmse(panel, test_years_vec)$vals
+
+    if (length(train_vals) > 0) {
+      unit_rmse_summary$median_rmse_train <- as.numeric(stats::quantile(train_vals, probs = 0.50, na.rm = TRUE, names = FALSE))
+      unit_rmse_summary$p90_rmse_train <- as.numeric(stats::quantile(train_vals, probs = 0.90, na.rm = TRUE, names = FALSE))
+      unit_rmse_summary$max_rmse_train <- max(train_vals, na.rm = TRUE)
+      unit_rmse_summary$n_treated_with_rmse_train <- as.integer(length(train_vals))
+    }
+    if (length(test_vals) > 0) {
+      unit_rmse_summary$median_rmse_test <- as.numeric(stats::quantile(test_vals, probs = 0.50, na.rm = TRUE, names = FALSE))
+      unit_rmse_summary$p90_rmse_test <- as.numeric(stats::quantile(test_vals, probs = 0.90, na.rm = TRUE, names = FALSE))
+      unit_rmse_summary$max_rmse_test <- max(test_vals, na.rm = TRUE)
+      unit_rmse_summary$n_treated_with_rmse_test <- as.integer(length(test_vals))
+    }
+  }
+
   return(list(
     rmse_train = rmse_train,
     rmse_test = rmse_test,
@@ -323,7 +427,15 @@ calculate_pretreatment_rmse <- function(weights_df,
     rmse_test_norm = rmse_test_norm,
     n_years_used_train = n_years_used_train,
     n_years_used_test = n_years_used_test,
-    fire_freq_data = fire_freq
+    fire_freq_data = fire_freq,
+    median_rmse_train = unit_rmse_summary$median_rmse_train,
+    p90_rmse_train = unit_rmse_summary$p90_rmse_train,
+    max_rmse_train = unit_rmse_summary$max_rmse_train,
+    median_rmse_test = unit_rmse_summary$median_rmse_test,
+    p90_rmse_test = unit_rmse_summary$p90_rmse_test,
+    max_rmse_test = unit_rmse_summary$max_rmse_test,
+    n_treated_with_rmse_train = unit_rmse_summary$n_treated_with_rmse_train,
+    n_treated_with_rmse_test = unit_rmse_summary$n_treated_with_rmse_test
   ))
 }
 

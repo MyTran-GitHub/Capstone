@@ -4,6 +4,8 @@ Download ESD tiles from provided URLs.
 Usage:
     1. Paste your URLs into urls.txt (one URL per line)
     2. Run: python download_esd_tiles.py
+    accept: --year
+            --urls-dir (folder containing all yearly URL files)
 
 The script will:
 - Download files to embedding_images/{year}/
@@ -18,6 +20,9 @@ import requests
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import time
+import glob
+import shutil
+import argparse
 
 # Configuration
 OUTPUT_BASE_DIR = Path("embedding_images")
@@ -119,76 +124,71 @@ def read_urls_from_file(filepath):
     return urls
 
 
+def read_urls_for_year(urls_dir: Path, year: int):
+    """
+    Read all URL files for a given year.
+    Expected pattern:
+    iearth_download_links_{year}_10.txt
+    iearth_download_links_{year}_11.txt
+    """
+    pattern = str(urls_dir / f"iearth_download_links_{year}_*.txt")
+    files = glob.glob(pattern)
+
+    if not files:
+        raise FileNotFoundError(f"No URL files found for year {year} in {urls_dir}")
+
+    urls = []
+    for file in files:
+        urls.extend(read_urls_from_file(Path(file)))
+
+    return urls
+
+
 def main():
-    """Main download workflow."""
-    
-    # Check for URLs file
-    urls_file = Path("urls.txt")
-    if not urls_file.exists():
-        print("Error: urls.txt not found!")
-        print("\nPlease create urls.txt with your download URLs (one per line)")
-        print("Then run this script again.")
-        sys.exit(1)
-    
-    # Read URLs
-    urls = read_urls_from_file(urls_file)
-    if not urls:
-        print("Error: No URLs found in urls.txt")
-        sys.exit(1)
-    
-    print(f"Found {len(urls)} URLs to download")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--year", type=int, required=True)
+    parser.add_argument("--urls-dir", type=Path, required=True)
+    args = parser.parse_args()
+
+    year = args.year
+    urls_dir = args.urls_dir
+
+    urls = read_urls_for_year(urls_dir, year)
+
+    print(f"Found {len(urls)} URLs for year {year}")
     print("=" * 80)
-    
-    # Download each file
+
     success_count = 0
     failed_urls = []
-    
+
     for i, url in enumerate(urls, 1):
         print(f"\n[{i}/{len(urls)}] Processing URL...")
-        
+
         try:
-            filename, year = extract_filename_and_year(url)
-            output_dir = OUTPUT_BASE_DIR / year
+            filename, _ = extract_filename_and_year(url)
+            output_dir = OUTPUT_BASE_DIR / str(year)
             output_path = output_dir / filename
-            
-            # Skip if already exists
+
             if output_path.exists():
-                file_size = output_path.stat().st_size
-                print(f"⊙ Already exists: {output_path} ({file_size / (1024*1024):.1f} MB)")
-                print("  Skipping download.")
+                print(f"⊙ Already exists: {output_path}")
                 success_count += 1
                 continue
-            
-            # Download
+
             if download_file(url, output_path):
                 success_count += 1
             else:
                 failed_urls.append(url)
-                
+
         except Exception as e:
             print(f"✗ Error processing URL: {e}")
             failed_urls.append(url)
-    
-    # Summary
-    print("\n" + "=" * 80)
-    print(f"\nDownload Summary:")
-    print(f"  Total files: {len(urls)}")
-    print(f"  Successful: {success_count}")
-    print(f"  Failed: {len(failed_urls)}")
-    
+
+    print("\nDownload Summary")
+    print(f"Successful: {success_count}/{len(urls)}")
+
     if failed_urls:
-        print(f"\nFailed URLs:")
-        for url in failed_urls:
-            print(f"  - {url}")
-        
-        # Save failed URLs for retry
-        failed_file = Path("urls_failed.txt")
-        with open(failed_file, 'w') as f:
-            for url in failed_urls:
-                f.write(url + '\n')
-        print(f"\nFailed URLs saved to: {failed_file}")
-        print("You can retry by renaming this file to urls.txt")
-
-
+        print("Failed downloads:")
+        for u in failed_urls:
+            print(u)
 if __name__ == "__main__":
     main()

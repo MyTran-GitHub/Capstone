@@ -228,6 +228,7 @@ run_covariate_exploration <- function(treated_year,
                                       cand_df = NULL,
                                       selected_lambda = NULL,
                                       out_dir = "diagnostics/diagnostics_results/covariates",
+                                      write_lambda_plot = FALSE,
                                       run_prefit_overlap = FALSE,
                                       prefit_if_missing = TRUE,
                                       write_prepost_metrics = FALSE,
@@ -239,16 +240,30 @@ run_covariate_exploration <- function(treated_year,
                                       write_summary = TRUE) {
   cfg <- get_diagnostics_config()
 
-  if (is.null(dim(X))) stop("X must be a matrix/data.frame.")
-  X <- as.data.frame(X)
-  if (nrow(X) != length(W)) stop("X rows must match length(W).")
+  # Allow callers to omit `X` when a design matrix is embedded in `res`.
+  if (is.null(X) || is.null(dim(X))) {
+    if (!is.null(res) && !is.null(res$X) && (is.matrix(res$X) || is.data.frame(res$X))) {
+      warning("`X` was missing or not a matrix/data.frame; using `res$X` from provided `res` object.")
+      X <- res$X
+    } else {
+      available_res_names <- if (!is.null(res)) paste(names(res), collapse = ", ") else "NULL"
+      stop(paste0("X must be a matrix/data.frame. Missing `X` and `res` does not contain a valid `X`. Available names in `res`: ", available_res_names))
+    }
+  }
+  have_X <- TRUE
+  if (!is.null(X)) {
+    X <- as.data.frame(X)
+    if (nrow(X) != length(W)) stop("X rows must match length(W).")
+  } else {
+    have_X <- FALSE
+  }
   if (is.null(res) || is.null(res$weights.0)) stop("res with weights.0 is required.")
   if (!is.null(cand_df) && !is.data.frame(cand_df)) stop("cand_df must be a data.frame when provided.")
 
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-  # Keep lambda diagnostics output minimal: plot only.
-  if (!is.null(cand_df) && nrow(cand_df) > 0) {
+  # Keep lambda diagnostics output explicitly opt-in to avoid file explosion.
+  if (isTRUE(write_lambda_plot) && !is.null(cand_df) && nrow(cand_df) > 0) {
     marker_lambda <- selected_lambda
 
     # Primary source: unified lambda_run file with explicit chosen column.
@@ -321,111 +336,152 @@ run_covariate_exploration <- function(treated_year,
   max_weight <- ifelse(ctrl_total > 0, max(w_ctrl, na.rm = TRUE) / ctrl_total, NA_real_)
 
   probs <- c(0.05, 0.25, 0.5, 0.75, 0.95)
-  cov_rows <- vector("list", ncol(X))
   dist_rows <- list()
 
   bs_pre <- res$balance.std.pre
   bs_post <- res$balance.std
 
-  total_covariates <- ncol(X)
-  log_progress <- !is.null(progress_every) && is.finite(progress_every) && progress_every > 0
-  if (log_progress) {
-    cat("  Diagnostics progress: ", total_covariates, " covariates\n", sep = "")
-  }
-
-  for (j in seq_len(ncol(X))) {
-    if (log_progress && j %% progress_every == 0) {
-      cat("    Processed ", j, "/", total_covariates, " covariates\n", sep = "")
-    }
-    nm <- colnames(X)[j]
-    x <- as.numeric(X[[j]])
-    xt <- x[treated_idx]
-    xc <- x[control_idx]
-
-    mt <- mean(xt, na.rm = TRUE)
-    mcp <- mean(xc, na.rm = TRUE)
-    mcw <- weighted_mean_safe(xc, w_ctrl)
-
-    sdt <- sd(xt, na.rm = TRUE)
-    sdcp <- sd(xc, na.rm = TRUE)
-    sdcw <- weighted_sd_safe(xc, w_ctrl)
-    if (is.na(sdt) || sdt <= 0) {
-      sdt <- sd(c(xt, xc), na.rm = TRUE)
-      if (is.na(sdt) || sdt <= 0) sdt <- 1
-    }
-
-    mean_shift_pre <- mt - mcp
-    mean_shift_post <- mt - mcw
-    smd_pre <- safe_smd(mt, mcp, sdt)
-    smd_post <- safe_smd(mt, mcw, sdt)
-
-    cbps_smd_pre <- NA_real_
-    cbps_smd_post <- NA_real_
-    if (!is.null(names(bs_pre)) && nm %in% names(bs_pre)) cbps_smd_pre <- as.numeric(bs_pre[nm])
-    if (!is.null(names(bs_post)) && nm %in% names(bs_post)) cbps_smd_post <- as.numeric(bs_post[nm])
-
-    cov_rows[[j]] <- data.frame(
-      year = treated_year,
-      area = area,
-      covariate = nm,
-      block = covariate_block(nm),
-      n_treated = sum(!is.na(xt)),
-      n_control = sum(!is.na(xc)),
-      treated_mean = mt,
-      control_mean_pre = mcp,
-      control_mean_post = mcw,
-      treated_sd = sdt,
-      control_sd_pre = sdcp,
-      control_sd_post = sdcw,
-      mean_shift_pre = mean_shift_pre,
-      mean_shift_post = mean_shift_post,
-      abs_mean_shift_pre = abs(mean_shift_pre),
-      abs_mean_shift_post = abs(mean_shift_post),
-      smd_pre = smd_pre,
-      smd_post = smd_post,
-      abs_smd_pre = abs(smd_pre),
-      abs_smd_post = abs(smd_post),
-      cbps_smd_pre = cbps_smd_pre,
-      cbps_smd_post = cbps_smd_post,
-      stringsAsFactors = FALSE
-    )
-
-    if (write_distribution) {
-      q_t <- stats::quantile(xt, probs = probs, na.rm = TRUE, names = FALSE)
-      q_cp <- stats::quantile(xc, probs = probs, na.rm = TRUE, names = FALSE)
-      q_cw <- weighted_quantile_safe(xc, w_ctrl, probs = probs)
-
-      dist_rows[[length(dist_rows) + 1]] <- data.frame(
+  if (!have_X) {
+    # Build minimal covariate frame from available CBPS balance outputs when raw X is not present.
+    cov_names <- unique(c(if (!is.null(bs_pre)) names(bs_pre) else character(0), if (!is.null(bs_post)) names(bs_post) else character(0)))
+    if (length(cov_names) == 0) stop("X missing and no balance.std/pre available in res; cannot compute covariate diagnostics.")
+    cov_rows <- lapply(seq_along(cov_names), function(i) {
+      nm <- cov_names[i]
+      smd_pre <- if (!is.null(bs_pre) && nm %in% names(bs_pre)) as.numeric(bs_pre[nm]) else NA_real_
+      smd_post <- if (!is.null(bs_post) && nm %in% names(bs_post)) as.numeric(bs_post[nm]) else NA_real_
+      data.frame(
         year = treated_year,
         area = area,
         covariate = nm,
-        group = "treated",
-        mean = mt,
-        sd = sdt,
-        q05 = q_t[1], q25 = q_t[2], q50 = q_t[3], q75 = q_t[4], q95 = q_t[5],
+        block = covariate_block(nm),
+        n_treated = NA_integer_,
+        n_control = NA_integer_,
+        treated_mean = NA_real_,
+        control_mean_pre = NA_real_,
+        control_mean_post = NA_real_,
+        treated_sd = NA_real_,
+        control_sd_pre = NA_real_,
+        control_sd_post = NA_real_,
+        mean_shift_pre = NA_real_,
+        mean_shift_post = NA_real_,
+        abs_mean_shift_pre = NA_real_,
+        abs_mean_shift_post = NA_real_,
+        smd_pre = smd_pre,
+        smd_post = smd_post,
+        abs_smd_pre = abs(smd_pre),
+        abs_smd_post = abs(smd_post),
+        cbps_smd_pre = smd_pre,
+        cbps_smd_post = smd_post,
         stringsAsFactors = FALSE
       )
-      dist_rows[[length(dist_rows) + 1]] <- data.frame(
-        year = treated_year,
-        area = area,
-        covariate = nm,
-        group = "control_pre",
-        mean = mcp,
-        sd = sdcp,
-        q05 = q_cp[1], q25 = q_cp[2], q50 = q_cp[3], q75 = q_cp[4], q95 = q_cp[5],
-        stringsAsFactors = FALSE
-      )
-      dist_rows[[length(dist_rows) + 1]] <- data.frame(
-        year = treated_year,
-        area = area,
-        covariate = nm,
-        group = "control_post",
-        mean = mcw,
-        sd = sdcw,
-        q05 = q_cw[1], q25 = q_cw[2], q50 = q_cw[3], q75 = q_cw[4], q95 = q_cw[5],
-        stringsAsFactors = FALSE
-      )
+    })
+    cov_df <- do.call(rbind, cov_rows)
+    dist_df <- NULL
+  } else {
+    total_covariates <- ncol(X)
+    cov_rows <- vector("list", total_covariates)
+    log_progress <- !is.null(progress_every) && is.finite(progress_every) && progress_every > 0
+    if (log_progress) {
+      cat("  Diagnostics progress: ", total_covariates, " covariates\n", sep = "")
     }
+
+    for (j in seq_len(ncol(X))) {
+      if (log_progress && j %% progress_every == 0) {
+        cat("    Processed ", j, "/", total_covariates, " covariates\n", sep = "")
+      }
+      nm <- colnames(X)[j]
+      x <- as.numeric(X[[j]])
+      xt <- x[treated_idx]
+      xc <- x[control_idx]
+
+      mt <- mean(xt, na.rm = TRUE)
+      mcp <- mean(xc, na.rm = TRUE)
+      mcw <- weighted_mean_safe(xc, w_ctrl)
+
+      sdt <- sd(xt, na.rm = TRUE)
+      sdcp <- sd(xc, na.rm = TRUE)
+      sdcw <- weighted_sd_safe(xc, w_ctrl)
+      if (is.na(sdt) || sdt <= 0) {
+        sdt <- sd(c(xt, xc), na.rm = TRUE)
+        if (is.na(sdt) || sdt <= 0) sdt <- 1
+      }
+
+      mean_shift_pre <- mt - mcp
+      mean_shift_post <- mt - mcw
+      smd_pre <- safe_smd(mt, mcp, sdt)
+      smd_post <- safe_smd(mt, mcw, sdt)
+
+      cbps_smd_pre <- NA_real_
+      cbps_smd_post <- NA_real_
+      if (!is.null(names(bs_pre)) && nm %in% names(bs_pre)) cbps_smd_pre <- as.numeric(bs_pre[nm])
+      if (!is.null(names(bs_post)) && nm %in% names(bs_post)) cbps_smd_post <- as.numeric(bs_post[nm])
+
+      cov_rows[[j]] <- data.frame(
+        year = treated_year,
+        area = area,
+        covariate = nm,
+        block = covariate_block(nm),
+        n_treated = sum(!is.na(xt)),
+        n_control = sum(!is.na(xc)),
+        treated_mean = mt,
+        control_mean_pre = mcp,
+        control_mean_post = mcw,
+        treated_sd = sdt,
+        control_sd_pre = sdcp,
+        control_sd_post = sdcw,
+        mean_shift_pre = mean_shift_pre,
+        mean_shift_post = mean_shift_post,
+        abs_mean_shift_pre = abs(mean_shift_pre),
+        abs_mean_shift_post = abs(mean_shift_post),
+        smd_pre = smd_pre,
+        smd_post = smd_post,
+        abs_smd_pre = abs(smd_pre),
+        abs_smd_post = abs(smd_post),
+        cbps_smd_pre = cbps_smd_pre,
+        cbps_smd_post = cbps_smd_post,
+        stringsAsFactors = FALSE
+      )
+
+      if (write_distribution) {
+        q_t <- stats::quantile(xt, probs = probs, na.rm = TRUE, names = FALSE)
+        q_cp <- stats::quantile(xc, probs = probs, na.rm = TRUE, names = FALSE)
+        q_cw <- weighted_quantile_safe(xc, w_ctrl, probs = probs)
+
+        dist_rows[[length(dist_rows) + 1]] <- data.frame(
+          year = treated_year,
+          area = area,
+          covariate = nm,
+          group = "treated",
+          mean = mt,
+          sd = sdt,
+          q05 = q_t[1], q25 = q_t[2], q50 = q_t[3], q75 = q_t[4], q95 = q_t[5],
+          stringsAsFactors = FALSE
+        )
+        dist_rows[[length(dist_rows) + 1]] <- data.frame(
+          year = treated_year,
+          area = area,
+          covariate = nm,
+          group = "control_pre",
+          mean = mcp,
+          sd = sdcp,
+          q05 = q_cp[1], q25 = q_cp[2], q50 = q_cp[3], q75 = q_cp[4], q95 = q_cp[5],
+          stringsAsFactors = FALSE
+        )
+        dist_rows[[length(dist_rows) + 1]] <- data.frame(
+          year = treated_year,
+          area = area,
+          covariate = nm,
+          group = "control_post",
+          mean = mcw,
+          sd = sdcw,
+          q05 = q_cw[1], q25 = q_cw[2], q50 = q_cw[3], q75 = q_cw[4], q95 = q_cw[5],
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+
+    cov_df <- do.call(rbind, cov_rows)
+    dist_df <- if (write_distribution && length(dist_rows) > 0) do.call(rbind, dist_rows) else NULL
   }
 
   cov_df <- do.call(rbind, cov_rows)

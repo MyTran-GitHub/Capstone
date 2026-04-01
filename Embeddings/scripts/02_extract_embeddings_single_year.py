@@ -4,6 +4,7 @@ Modified version for testing with a single year of data.
 Uses GeoTIFF transforms to avoid spatial misalignment.
 
 run this first pip install packaging
+Usage: python 02_extract_embeddings_single_year.py --year 2008
 """
 
 import argparse

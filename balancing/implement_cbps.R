@@ -38,6 +38,7 @@ cli_args <- commandArgs(trailingOnly = TRUE)
 area <- parse_flag_value(cli_args, "--area", "conifer")
 years_arg <- parse_flag_value(cli_args, "--years", NULL)
 year_arg <- parse_flag_value(cli_args, "--year", NULL)
+experiment_name <- parse_flag_value(cli_args, "--experiment-name", "full_pool")
 diag_out_dir <- parse_flag_value(
   cli_args,
   "--covariate-diagnostics-dir",
@@ -65,8 +66,20 @@ if (exists("RECORD_LAMBDA_PATH")) {
 }
 
 outDir <- "data/processed_data/rev_analysis_low/"
+resolve_experiment_dir <- function(base_dir, experiment_name) {
+  base_norm <- normalizePath(base_dir, winslash = "/", mustWork = FALSE)
+  if (basename(base_norm) == experiment_name) return(base_dir)
+  file.path(base_dir, experiment_name)
+}
+
+result_out_dir <- resolve_experiment_dir(outDir, experiment_name)
+lambda_run_out_dir <- resolve_experiment_dir(lambda_run_out_dir, experiment_name)
+diag_out_dir <- resolve_experiment_dir(diag_out_dir, experiment_name)
+
 dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(lambda_run_out_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(diag_out_dir, recursive = TRUE, showWarnings = FALSE)
 # Focal treatment years with sufficient pre-treatment data
 years <- 2005:2020
 if (!is.null(year_arg)) {
@@ -85,6 +98,7 @@ for (treated.year in years) {
   cand_df <- NULL
   
   cat("Processing year:", treated.year, "\n")
+  cat("  Experiment:", experiment_name, "\n")
   
   if (!file.exists(input_file)) {
     cat("  File not found, skipping.\n")
@@ -339,9 +353,13 @@ for (treated.year in years) {
     weight = weight
   )
 
+  # Persist design inputs with the fit so diagnostics can be rerun from fit files alone.
+  res$X <- X
+  res$W <- W
+
   # Save fit results and weights before running diagnostics to prioritize outputs
-  saveRDS(res, paste0(outDir, "cbps_fit_", treated.year, "_", area, "_rho", rho, ".RDS"))
-  saveRDS(weights_df, paste0(outDir, "cbps_weights_", treated.year, "_", area, ".RDS"))
+  saveRDS(res, paste0(result_out_dir, "/cbps_fit_", treated.year, "_", area, "_rho", rho, ".RDS"))
+  saveRDS(weights_df, paste0(result_out_dir, "/cbps_weights_", treated.year, "_", area, ".RDS"))
   cat("  Saved: cbps_fit_", treated.year, "_", area, "_rho", rho, ".RDS\n", sep = "")
   cat("  Saved: cbps_weights_", treated.year, "_", area, ".RDS\n", sep = "")
 
@@ -357,6 +375,7 @@ for (treated.year in years) {
         cand_df = cand_df,
         selected_lambda = rho,
         out_dir = diag_out_dir,
+        write_lambda_plot = TRUE,
         run_prefit_overlap = FALSE,
         write_prepost_metrics = FALSE,
         write_distribution = FALSE,
@@ -379,6 +398,7 @@ for (treated.year in years) {
         cand_df = cand_df,
         selected_lambda = rho,
         out_dir = diag_out_dir,
+        write_lambda_plot = FALSE,
         run_prefit_overlap = FALSE,
         write_prepost_metrics = FALSE,
         write_distribution = FALSE,
