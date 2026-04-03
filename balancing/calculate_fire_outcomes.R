@@ -1,46 +1,134 @@
-## Shared function: Calculate weighted fire frequency outcomes
-## Used by both weighted_outcome_analysis.R and run_cbps_with_selected_controls.R
-##
-## This function takes CBPS weights and calculates fire.frac (weighted fire frequency)
-## for specified years, following the weighted outcome analysis methodology.
-##
-## IMPORTANT: FIRMS.RDS contains fire data for ALL areas (conifer + hardwood), but
-## the merge operation with weights_df (which comes from analysis_treated{year}_conifer.RDS)
-## automatically filters to conifer pixels only via coordinate matching.
-## This is safe and correct - no manual filtering needed!
 library(magrittr)  # Provides %>%
 # Declare global variables used in dplyr/ggplot2 operations to avoid R CMD check NOTEs
 utils::globalVariables(c(
   "year", "treated", "weight", "has.fire", "weight.fire",
   "sum.fire", "denom", "fire.frac", "group",
   "treated_0", "treated_1",  # For pivot_wider
-  "date_obj", "unit", "fire.frac"  # For panel construction
+  "date_obj", "unit", "fire.frac",  # For panel construction
+  "avg_BRIGHTNESS", "max_FRP", "has.hifire95", "has.hifire90",
+  "weight_hifire95", "sq_err", "sum.hifire95", "sum.hifire90",
+  "hifire95.frac", "hifire90.frac"
 ))
+
+# Script-level NSE bindings for static analyzers.
+year <- treated <- weight <- has.fire <- weight.fire <- NULL
+sum.fire <- denom <- fire.frac <- group <- NULL
+treated_0 <- treated_1 <- date_obj <- unit <- NULL
+avg_BRIGHTNESS <- max_FRP <- has.hifire95 <- has.hifire90 <- NULL
+weight_hifire95 <- sq_err <- sum.hifire95 <- sum.hifire90 <- NULL
+hifire95.frac <- hifire90.frac <- NULL
+
+# -----------------------------------------------------------------------------
+# Diagnostics helpers
+# -----------------------------------------------------------------------------
+# Reusable empty return shape for fire-frequency outputs.
+empty_fire_freq_df <- function() {
+  data.frame(
+    year = integer(),
+    treated = integer(),
+    fire.frac = numeric(),
+    sum.fire = numeric(),
+    denom = numeric(),
+    hifire95.frac = numeric(),
+    hifire90.frac = numeric()
+  )
+}
+
+diag_print <- function(verbose, title, obj = NULL, head_n = NULL) {
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  cat("\n--- DIAGNOSTICS:", title, "---\n")
+  if (is.null(obj)) return(invisible(NULL))
+  if (is.null(head_n)) {
+    print(str(obj))
+  } else {
+    print(utils::head(obj, head_n))
+  }
+  invisible(NULL)
+}
+
+format_df_diagnostics <- function(df, name = "df", max_preview_rows = 3L) {
+  if (!is.data.frame(df)) {
+    return(sprintf("%s: <not data.frame> class=%s", name, paste(class(df), collapse = ",")))
+  }
+  cols <- names(df)
+  row_count <- nrow(df)
+  col_count <- ncol(df)
+  preview <- ""
+  if (row_count > 0) {
+    preview_df <- utils::head(df, max_preview_rows)
+    preview <- paste(capture.output(print(preview_df)), collapse = " | ")
+  }
+  sprintf(
+    "%s: nrow=%s ncol=%s cols=[%s]%s",
+    name,
+    row_count,
+    col_count,
+    paste(cols, collapse = ","),
+    if (nzchar(preview)) paste0(" preview=", preview) else ""
+  )
+}
+
+# -----------------------------------------------------------------------------
+# Input normalization helpers
+# -----------------------------------------------------------------------------
+normalize_treated_column <- function(df, context = "data") {
+  if (!is.data.frame(df)) {
+    stop(sprintf("%s must be a data.frame", context))
+  }
+
+  if (!"treated" %in% names(df)) {
+    alt_names <- c("treat", "TREATED", "is_treated", "treated_flag", "treated1", "group", "status")
+    found <- intersect(alt_names, names(df))
+    if (length(found) >= 1) {
+      df$treated <- df[[found[1]]]
+      warning(sprintf("Mapped alternative treatment column '%s' to 'treated' in %s", found[1], context))
+    }
+  }
+
+  if (!"treated" %in% names(df)) {
+    stop(sprintf("%s is missing required column 'treated'. Available columns: %s", context, paste(names(df), collapse = ", ")))
+  }
+
+  tr <- df$treated
+  if (is.logical(tr)) {
+    tr <- as.integer(tr)
+  } else if (is.character(tr)) {
+    tr_trim <- trimws(tolower(tr))
+    tr <- ifelse(tr_trim %in% c("1", "true", "treated", "case", "yes", "y"), 1L,
+                 ifelse(tr_trim %in% c("0", "false", "control", "no", "n"), 0L, NA_integer_))
+  } else {
+    tr <- suppressWarnings(as.integer(tr))
+  }
+
+  ok <- !is.na(tr) & (tr %in% c(0L, 1L))
+  if (!any(ok)) {
+    stop(sprintf("%s has 'treated' but no valid 0/1 values after coercion", context))
+  }
+
+  df$treated <- tr
+  df
+}
+
+# -----------------------------------------------------------------------------
+# Core fire-frequency construction
+# -----------------------------------------------------------------------------
 calculate_fire_frequency <- function(weights_df, 
                                      firms_rds_path = "data/processed_data/FIRMS.RDS",
-                                     years_to_include = NULL) {
-  #' Calculate weighted fire frequency for treated vs control groups
-  #' 
-  #' CRITICAL: Matches weighted_outcome_analysis.R logic exactly:
-  #' 1. Create full panel (all year-unit combinations)
-  #' 2. Merge fire data with panel (units without fires get has.fire = 0)
-  #' 3. Compute weighted fire frequency where denom = sum of ALL unit weights
-  #' 
-  #' @param weights_df Data frame with columns: unit, LATITUDE, LONGITUDE, treated, weight
-  #' @param firms_rds_path Path to FIRMS.RDS file
-  #' @param years_to_include Vector of years to include (NULL = all years)
-  #' 
-  #' @return Data frame with columns: year, treated, fire.frac, sum.fire, denom
+                                     years_to_include = NULL,
+                                     firms_data = NULL,
+                                     verbose = FALSE) {
+  diag_print(verbose, "weights_df structure", weights_df)
 
-  # DIAGNOSTICS: Print structure before merge
-  cat("\n--- DIAGNOSTICS: weights_df structure ---\n")
-  print(str(weights_df))
-  cat("\n--- DIAGNOSTICS: firms_base structure ---\n")
+  weights_df <- normalize_treated_column(weights_df, context = "weights_df")
   # Load FIRMS fire data
-  if (!file.exists(firms_rds_path)) {
-    stop(paste("FIRMS data not found:", firms_rds_path))
+  if (!is.null(firms_data)) {
+    firms_base <- firms_data
+  } else {
+    if (!file.exists(firms_rds_path)) {
+      stop(paste("FIRMS data not found:", firms_rds_path))
+    }
+    firms_base <- readRDS(firms_rds_path)
   }
-  firms_base <- readRDS(firms_rds_path)
   # Fix: Drop geometry column and convert sf to data.frame if needed
   if (inherits(firms_base, "sf")) {
     if (requireNamespace("sf", quietly = TRUE)) {
@@ -60,11 +148,9 @@ calculate_fire_frequency <- function(weights_df,
   if (any(is_sfc_like)) {
     firms_base <- firms_base[, !is_sfc_like, drop = FALSE]
   }
-  print(str(firms_base))
-  cat("\n--- DIAGNOSTICS: head(weights_df) ---\n")
-  print(head(weights_df, 10))
-  cat("\n--- DIAGNOSTICS: head(firms_base) ---\n")
-  print(head(firms_base, 10))
+  diag_print(verbose, "firms_base structure", firms_base)
+  diag_print(verbose, "head(weights_df)", weights_df, head_n = 10)
+  diag_print(verbose, "head(firms_base)", firms_base, head_n = 10)
 
   firms_base$unit <- paste0(firms_base$LATITUDE, firms_base$LONGITUDE)
   firms_base$has.fire <- 1
@@ -111,11 +197,8 @@ calculate_fire_frequency <- function(weights_df,
   firms$has.hifire90 <- 0
   firms$has.hifire95[!is.na(firms$max_FRP) & firms$max_FRP >= 1000] <- 1
   firms$has.hifire90[!is.na(firms$max_FRP) & firms$max_FRP >= 500] <- 1
-  # DIAGNOSTICS: Print structure after merge
-  cat("\n--- DIAGNOSTICS: merged firms structure ---\n")
-  print(str(firms))
-  cat("\n--- DIAGNOSTICS: head(merged firms) ---\n")
-  print(head(firms, 10))
+  diag_print(verbose, "merged firms structure", firms)
+  diag_print(verbose, "head(merged firms)", firms, head_n = 10)
 
   if (!requireNamespace("dplyr", quietly = TRUE)) {
     stop("Package 'dplyr' required")
@@ -130,14 +213,47 @@ calculate_fire_frequency <- function(weights_df,
   if (!is.null(years_to_include)) {
     firms <- firms[firms$year %in% years_to_include, ]
   }
+
+  if (nrow(firms) == 0) {
+    warning("No fire records found after filtering to study units/years")
+    return(empty_fire_freq_df())
+  }
+
+  # Collapse to one row per unit-year to avoid duplicate event-row expansion in panel merge.
+  firms <- firms %>%
+    dplyr::group_by(year, unit) %>%
+    dplyr::summarise(
+      treated = dplyr::first(treated),
+      has.fire = max(has.fire, na.rm = TRUE),
+      avg_BRIGHTNESS = ifelse(all(is.na(avg_BRIGHTNESS)), NA_real_, mean(avg_BRIGHTNESS, na.rm = TRUE)),
+      max_FRP = ifelse(all(is.na(max_FRP)), NA_real_, max(max_FRP, na.rm = TRUE)),
+      has.hifire95 = max(has.hifire95, na.rm = TRUE),
+      has.hifire90 = max(has.hifire90, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  if (!"treated" %in% names(firms)) {
+    stop(paste0("firms missing treated after unit-year collapse | ", format_df_diagnostics(firms, "firms")))
+  }
   
   # ============================================================================
   # CRITICAL: Create full panel (matching weighted_outcome_analysis.R lines 57-68)
   # Without this, denom only includes units WITH fires → inflated fire.frac!
   # ============================================================================
   
-  start_year <- min(firms$year)
-  end_year <- max(firms$year)
+  if (!is.null(years_to_include) && length(years_to_include) > 0) {
+    panel_years <- sort(unique(as.integer(years_to_include)))
+  } else {
+    panel_years <- seq(min(firms$year), max(firms$year))
+  }
+
+  if (length(panel_years) == 0) {
+    warning("No panel years available for fire frequency calculation")
+    return(empty_fire_freq_df())
+  }
+
+  start_year <- min(panel_years)
+  end_year <- max(panel_years)
   
   # Create date sequence
   start_date <- as.Date(paste0(start_year, "-01-01"))
@@ -158,7 +274,7 @@ calculate_fire_frequency <- function(weights_df,
   # Matching lines 70-79 of weighted_outcome_analysis.R
   # Include all relevant fire intensity columns for downstream hifire95.frac, hifire90.frac, etc.
   df_final <- merge(df_panel,
-                    firms[, c("year", "unit", "has.fire", "avg_BRIGHTNESS", "max_FRP", "treated", "has.hifire95", "has.hifire90")],
+                    firms[, c("year", "unit", "has.fire", "avg_BRIGHTNESS", "max_FRP", "has.hifire95", "has.hifire90")],
                     by = c("year", "unit"),
                     all.x = TRUE)
   
@@ -185,34 +301,70 @@ calculate_fire_frequency <- function(weights_df,
   }
   
   # Calculate weighted fire frequency and high-intensity fire frequency (matching lines 81-92)
+  required_df_final_cols <- c("year", "treated", "weight", "has.fire", "has.hifire95", "has.hifire90")
+  missing_df_final_cols <- setdiff(required_df_final_cols, names(df_final))
+  if (length(missing_df_final_cols) > 0) {
+    stop(
+      paste0(
+        "df_final missing required columns: ", paste(missing_df_final_cols, collapse = ", "),
+        " | ", format_df_diagnostics(df_final, "df_final")
+      )
+    )
+  }
+
   df_final$weight.fire <- df_final$has.fire * df_final$weight
   df_final$weight.hifire95 <- df_final$has.hifire95 * df_final$weight
   df_final$weight.hifire90 <- df_final$has.hifire90 * df_final$weight
 
-  fire_freq <- df_final %>%
-    dplyr::group_by(year, treated) %>%
-    dplyr::summarise(
-      sum.fire = sum(weight.fire, na.rm = TRUE),
-      sum.hifire95 = sum(weight.hifire95, na.rm = TRUE),
-      sum.hifire90 = sum(weight.hifire90, na.rm = TRUE),
-      denom = sum(weight, na.rm = TRUE),  # Now includes ALL units, not just those with fires
-      .groups = "drop"
-    ) %>%
-    dplyr::mutate(
-      fire.frac = ifelse(denom == 0, NA_real_, sum.fire / denom),
-      hifire95.frac = ifelse(denom == 0, NA_real_, sum.hifire95 / denom),
-      hifire90.frac = ifelse(denom == 0, NA_real_, sum.hifire90 / denom)
-    )
+  fire_freq <- tryCatch(
+    {
+      df_final %>%
+        dplyr::group_by(year, treated) %>%
+        dplyr::summarise(
+          sum.fire = sum(weight.fire, na.rm = TRUE),
+          sum.hifire95 = sum(weight.hifire95, na.rm = TRUE),
+          sum.hifire90 = sum(weight.hifire90, na.rm = TRUE),
+          denom = sum(weight, na.rm = TRUE),  # Now includes ALL units, not just those with fires
+          .groups = "drop"
+        ) %>%
+        dplyr::mutate(
+          fire.frac = ifelse(denom == 0, NA_real_, sum.fire / denom),
+          hifire95.frac = ifelse(denom == 0, NA_real_, sum.hifire95 / denom),
+          hifire90.frac = ifelse(denom == 0, NA_real_, sum.hifire90 / denom)
+        )
+    },
+    error = function(e) {
+      msg <- tryCatch(conditionMessage(e), error = function(...) "")
+      if (is.null(msg) || !nzchar(msg)) msg <- "<empty error message>"
+      treated_summary <- tryCatch(
+        paste(capture.output(print(table(df_final$treated, useNA = "ifany"))), collapse = " | "),
+        error = function(...) "<failed to summarize treated>"
+      )
+      stop(
+        paste0(
+          "Failed while aggregating fire frequencies: ", msg,
+          " | treated_summary=", treated_summary,
+          " | ", format_df_diagnostics(df_final, "df_final")
+        )
+      )
+    }
+  )
+
+  fire_freq <- normalize_treated_column(fire_freq, context = "fire_freq")
 
   return(fire_freq)
 }
 
+# -----------------------------------------------------------------------------
+# Pre-treatment RMSE computation
+# -----------------------------------------------------------------------------
 calculate_pretreatment_rmse <- function(weights_df,
                                         train_start,
                                         train_end,
                                         test_start,
                                         test_end,
-                                        firms_rds_path = "data/processed_data/FIRMS.RDS") {
+                                        firms_rds_path = "data/processed_data/FIRMS.RDS",
+                                        firms_data = NULL) {
   #' Calculate pre-treatment RMSE on fire frequency outcomes
   #' 
   #' Measures how well treated and control groups match in pre-treatment fire frequency.
@@ -239,7 +391,8 @@ calculate_pretreatment_rmse <- function(weights_df,
   fire_freq <- calculate_fire_frequency(
     weights_df = weights_df,
     firms_rds_path = firms_rds_path,
-    years_to_include = all_years
+    years_to_include = all_years,
+    firms_data = firms_data
   )
   
   if (nrow(fire_freq) == 0) {
@@ -258,6 +411,12 @@ calculate_pretreatment_rmse <- function(weights_df,
   rmse_train <- NA_real_
   rmse_train_norm <- NA_real_
   if (nrow(fire_train) > 0) {
+    if (!all(c("year", "treated", "hifire95.frac") %in% names(fire_train))) {
+      stop(sprintf(
+        "fire_train missing required columns for RMSE. Required: year, treated, hifire95.frac. Found: %s",
+        paste(names(fire_train), collapse = ", ")
+      ))
+    }
     fire_train_wide <- fire_train %>%
       dplyr::select(year, treated, hifire95.frac) %>%
       tidyr::pivot_wider(names_from = treated, values_from = hifire95.frac, names_prefix = "treated_")
@@ -291,6 +450,12 @@ calculate_pretreatment_rmse <- function(weights_df,
   rmse_test <- NA_real_
   rmse_test_norm <- NA_real_
   if (nrow(fire_test) > 0) {
+    if (!all(c("year", "treated", "hifire95.frac") %in% names(fire_test))) {
+      stop(sprintf(
+        "fire_test missing required columns for RMSE. Required: year, treated, hifire95.frac. Found: %s",
+        paste(names(fire_test), collapse = ", ")
+      ))
+    }
     fire_test_wide <- fire_test %>%
       dplyr::select(year, treated, hifire95.frac) %>%
       tidyr::pivot_wider(names_from = treated, values_from = hifire95.frac, names_prefix = "treated_")
@@ -332,7 +497,11 @@ calculate_pretreatment_rmse <- function(weights_df,
   )
 
   # Build unit-year panel for treated outcomes and weighted-control synthetic outcomes.
-  fire_base <- readRDS(firms_rds_path)
+  if (!is.null(firms_data)) {
+    fire_base <- firms_data
+  } else {
+    fire_base <- readRDS(firms_rds_path)
+  }
   if (inherits(fire_base, "sf")) {
     if (requireNamespace("sf", quietly = TRUE)) {
       coords_try <- try(sf::st_coordinates(fire_base), silent = TRUE)
@@ -439,6 +608,9 @@ calculate_pretreatment_rmse <- function(weights_df,
   ))
 }
 
+# -----------------------------------------------------------------------------
+# Visualization helper
+# -----------------------------------------------------------------------------
 plot_pretreatment_trajectory <- function(weights_df,
                                          train_start,
                                          train_end,
@@ -447,22 +619,7 @@ plot_pretreatment_trajectory <- function(weights_df,
                                          output_path = NULL,
                                          treatment_year = NULL,
                                          firms_rds_path = "data/processed_data/FIRMS.RDS") {
-  #' Plot pre-treatment fire frequency trajectory for treated vs control
-  #' 
-  #' Visual check of parallel trends assumption. Lines should track closely
-  #' in pre-treatment period if matching is successful.
-  #' 
-  #' @param weights_df Data frame with columns: unit, LATITUDE, LONGITUDE, treated, weight
-  #' @param train_start First year of training period (e.g., 2000)
-  #' @param train_end Last year of training period (e.g., 2010)
-  #' @param test_start First year of test period (e.g., 2011)
-  #' @param test_end Last year of test period (e.g., 2015)
-  #' @param output_path Optional path to save plot (PNG or PDF)
-  #' @param treatment_year Optional year to mark treatment start with vertical line
-  #' @param firms_rds_path Path to FIRMS.RDS file
-  #' 
-  #' @return Data frame with trajectory data (for further analysis)
-  
+
   if (!requireNamespace("ggplot2", quietly = TRUE)) {
     warning("Package 'ggplot2' not available - trajectory data returned without plot")
     plot_enabled <- FALSE
@@ -572,6 +729,9 @@ plot_pretreatment_trajectory <- function(weights_df,
 }
 
 
+# -----------------------------------------------------------------------------
+# Pooled jackknife estimators
+# -----------------------------------------------------------------------------
 #' Pooled jackknife estimator for ratio ATT (adapted from analysis/fire_regression_lag.R)
 #'
 #' Computes a pooled (cohort-pooled across years) ratio estimator of treated vs control
@@ -655,6 +815,7 @@ compute_pooled_jackknife_att <- function(weights_df,
 compute_pooled_jackknife_per_lag_weights <- function(weights_df,
                                                      focal_years,
                                                      outcome_var = "hifire95.frac",
+                                                     firms_rds_path = "data/processed_data/FIRMS.RDS",
                                                      ci_type = "two") {
   all.lags <- 1:9
   all.end.years <- 2009:2021
@@ -663,17 +824,27 @@ compute_pooled_jackknife_per_lag_weights <- function(weights_df,
   raw.plot$ratio <- NA_real_
   raw.plot$Baseline <- NA_real_
 
+  required_start_years <- sort(unique(raw.plot$Year - raw.plot$Lag))
+  required_start_years <- required_start_years[required_start_years %in% focal_years]
+
+  if (length(required_start_years) == 0) {
+    stop("No candidate start years overlap focal_years for pooled jackknife (weights)")
+  }
+
+  ff_all <- calculate_fire_frequency(
+    weights_df = weights_df,
+    firms_rds_path = firms_rds_path,
+    years_to_include = required_start_years
+  )
+
   for (i in seq_len(nrow(raw.plot))) {
     YYY <- raw.plot$Year[i]
     LLL <- raw.plot$Lag[i]
     start_year <- YYY - LLL
     if (!(start_year %in% focal_years)) next
 
-    ff <- tryCatch(
-      calculate_fire_frequency(weights_df = weights_df, years_to_include = start_year),
-      error = function(e) NULL
-    )
-    if (is.null(ff) || nrow(ff) == 0) next
+    ff <- ff_all[ff_all$year == start_year, , drop = FALSE]
+    if (nrow(ff) == 0) next
 
     treated_val <- ff[[outcome_var]][ff$treated == 1]
     control_val <- ff[[outcome_var]][ff$treated == 0]
@@ -717,6 +888,9 @@ compute_pooled_jackknife_per_lag_weights <- function(weights_df,
 
 
 
+# -----------------------------------------------------------------------------
+# ATT estimation entrypoint
+# -----------------------------------------------------------------------------
 estimate_att_with_ci <- function(weights_df,
                                  outcome_years,
                                  treatment_year,
@@ -742,10 +916,6 @@ estimate_att_with_ci <- function(weights_df,
   
   if (!requireNamespace("sandwich", quietly = TRUE)) {
     stop("Package 'sandwich' required for robust standard errors. Install with: install.packages('sandwich')")
-  }
-  
-  if (!requireNamespace("lmtest", quietly = TRUE)) {
-    stop("Package 'lmtest' required for regression testing. Install with: install.packages('lmtest')")
   }
   
   # Calculate post-treatment fire frequency
@@ -777,9 +947,11 @@ estimate_att_with_ci <- function(weights_df,
   method <- match.arg(method)
   if (method == "pooled_jackknife_per_lag") {
     # Reuse the analysis script's pooled per-lag estimator
-    res <- compute_pooled_jackknife_per_lag(focal_years = outcome_years,
-                                            outcome_var = "hifire95.frac",
-                                            ci_type = ifelse(alpha == 0.05, "two", "one"))
+    res <- compute_pooled_jackknife_per_lag_weights(weights_df = weights_df,
+                                                    focal_years = outcome_years,
+                                                    outcome_var = "hifire95.frac",
+                                                    firms_rds_path = firms_rds_path,
+                                                    ci_type = ifelse(alpha == 0.05, "two", "one"))
 
     # res has columns: year (lag index), rate, lower, upper
     zcrit <- qnorm(1 - alpha / 2)
@@ -800,14 +972,29 @@ estimate_att_with_ci <- function(weights_df,
     cat("✓ Computed pooled jackknife per-lag ATT (ratio) via analysis/fire_regression_lag.R\n")
     return(results_df)
   }
-  
-  # Merge weights with fire frequency for regression
-  fire_freq_with_weights <- merge(
-    fire_freq,
-    weights_df[, c("unit", "treated", "weight")],
-    by = "treated",
-    all.x = TRUE
-  )
+
+  if (method == "pooled_jackknife") {
+    pooled <- compute_pooled_jackknife_att(
+      weights_df = weights_df,
+      outcome_years = outcome_years,
+      outcome_var = "hifire95.frac",
+      firms_rds_path = firms_rds_path,
+      alpha = alpha
+    )
+
+    return(data.frame(
+      year = NA_integer_,
+      method = "pooled_jackknife",
+      att = pooled$att_ratio,
+      se = pooled$se,
+      ci_lower = pooled$ci_lower,
+      ci_upper = pooled$ci_upper,
+      ci_width = pooled$ci_upper - pooled$ci_lower,
+      n_treated = n_treated,
+      n_control = n_control,
+      stringsAsFactors = FALSE
+    ))
+  }
   
   # Estimate ATT for each year
   results_list <- list()

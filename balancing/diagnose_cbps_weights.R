@@ -24,6 +24,8 @@ suppressPackageStartupMessages({
   library("tidyr")
 })
 
+source("balancing/cli_utils.R")
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -736,7 +738,11 @@ if (length(args) < 1) {
   quit(status = 1)
 }
 
-year <- as.integer(args[1])
-selected_units_path <- if (length(args) >= 2) args[2] else NULL
+parsed_years <- parse_years_list(args[1], "positional <year>")
+if (length(parsed_years) != 1) {
+  stop("Please provide exactly one treatment year as the first positional argument")
+}
+year <- parsed_years[1]
+selected_units_path <- if (length(args) >= 2 && nzchar(args[2])) args[2] else NULL
 
 diagnose_cbps_data(year, selected_units_path)

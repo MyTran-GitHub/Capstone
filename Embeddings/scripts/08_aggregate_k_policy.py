@@ -45,6 +45,19 @@ def infer_n_treated(year: int) -> Optional[int]:
         return None
 
 
+def infer_n_treated_from_diagnostics(df: pd.DataFrame) -> Optional[int]:
+    candidates = ["n_treated", "treated_n", "n_treat", "treated_count"]
+    for col in candidates:
+        if col in df.columns:
+            vals = pd.to_numeric(df[col], errors="coerce")
+            vals = vals[vals.notna()]
+            if not vals.empty:
+                value = int(vals.iloc[0])
+                if value > 0:
+                    return value
+    return None
+
+
 def load_lambda_hard_gates(config_path: str = "balancing/balancing_config.R") -> Dict[str, float]:
     default = {
         "max_smd": 0.10,
@@ -175,7 +188,11 @@ def aggregate_policy(years: List[int], out_dir: Path, experiment_name: str, inpu
 
     for year in years:
         suffix = f"_{input_tag}" if input_tag else ""
-        fp = K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_rmse{suffix}.csv"
+        fp = (K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_rmse{suffix}.csv") if experiment_name else (K_SELECTION_DIR / str(year) / f"k_selection_rmse{suffix}.csv")
+        if not fp.exists() and experiment_name:
+            fallback_fp = K_SELECTION_DIR / str(year) / f"k_selection_rmse{suffix}.csv"
+            if fallback_fp.exists():
+                fp = fallback_fp
         if not fp.exists():
             logger.warning("Skipping %s: missing %s", year, fp)
             continue
@@ -200,18 +217,34 @@ def aggregate_policy(years: List[int], out_dir: Path, experiment_name: str, inpu
             logger.warning("Skipping %s: missing required columns %s", year, missing)
             continue
 
+        df["K"] = pd.to_numeric(df["K"], errors="coerce")
+        df["rmse"] = pd.to_numeric(df["rmse"], errors="coerce")
+        df["pool_size"] = pd.to_numeric(df["pool_size"], errors="coerce")
+        df = df[df["K"].notna() & df["rmse"].notna() & df["pool_size"].notna()].copy()
+        if df.empty:
+            logger.warning("Skipping %s: no usable K/rmse/pool_size rows after numeric coercion", year)
+            continue
+        df["K"] = df["K"].astype(int)
+
         n_treated = infer_n_treated(year)
         if n_treated is None or n_treated <= 0:
-            # Fallback to historical fixed cohort size when embedding file unavailable.
-            n_treated = 414
-            logger.warning("Year %s: treated count not found, using fallback n_treated=%s", year, n_treated)
+            n_treated = infer_n_treated_from_diagnostics(df)
+        if n_treated is None or n_treated <= 0:
+            logger.warning("Skipping %s: treated count could not be inferred from embeddings or diagnostics", year)
+            continue
 
         enriched, pick = apply_feasible_and_plateau_rules(df, n_treated=n_treated, gates=gates)
         enriched_out = out_dir / f"k_selection_enriched_{year}.csv"
         enriched.to_csv(enriched_out, index=False)
 
         chosen_k = pick["chosen_K"]
-        chosen_row = enriched[enriched["K"] == chosen_k].iloc[0]
+        chosen_matches = enriched[enriched["K"] == int(chosen_k)]
+        if chosen_matches.empty:
+            logger.warning("Year %s: chosen K=%s not found after enrichment; using best available row", year, chosen_k)
+            chosen_row = enriched.sort_values(["rmse", "pool_size", "K"], na_position="last").iloc[0]
+            chosen_k = int(chosen_row["K"])
+        else:
+            chosen_row = chosen_matches.iloc[0]
 
         plateau_k = pick.get("plateau_K", [])
         if plateau_k:
@@ -319,12 +352,12 @@ def main() -> int:
         default=None,
         help="Output directory for aggregated policy artifacts",
     )
-    parser.add_argument("--experiment-name", type=str, default="full_pool")
+    parser.add_argument("--experiment-name", type=str, default="", help="Optional legacy experiment namespace")
     parser.add_argument("--input-tag", type=str, default="", help="Optional tag suffix used in k_selection_rmse_<tag>.csv")
     parser.add_argument("--config-path", type=str, default="balancing/balancing_config.R")
     args = parser.parse_args()
 
-    out_dir = Path(args.out_dir) if args.out_dir else (K_SELECTION_DIR / args.experiment_name / "policy")
+    out_dir = Path(args.out_dir) if args.out_dir else ((K_SELECTION_DIR / args.experiment_name / "policy") if args.experiment_name else (K_SELECTION_DIR / "policy"))
     gates = load_lambda_hard_gates(args.config_path)
     return aggregate_policy(args.years, out_dir, args.experiment_name, args.input_tag, gates)
 

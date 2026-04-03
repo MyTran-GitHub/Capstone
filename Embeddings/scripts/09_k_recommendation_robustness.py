@@ -34,6 +34,8 @@ def run_one(
     target_pool_proportions: Optional[List[float]] = None,
     include_full_pool: bool = True,
     config_path: str = "balancing/balancing_config.R",
+    timeout_seconds: int = 7200,
+    force_recompute: bool = False,
 ) -> Dict:
     tag = f"rob_y{year}_f{int(round(frac * 1000)):03d}_r{run_id:03d}"
     cmd = [
@@ -54,9 +56,11 @@ def run_one(
         analysis_base_dir,
         "--config-path",
         config_path,
-        "--force-recompute",
         "--k-values",
     ] + [str(k) for k in k_values]
+
+    if force_recompute:
+        cmd += ["--force-recompute"]
 
     if target_pool_proportions:
         cmd += ["--target-pool-proportions"] + [str(x) for x in target_pool_proportions]
@@ -64,7 +68,19 @@ def run_one(
         cmd += ["--no-full-pool"]
 
     logger.info("Running robustness selection: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "year": year,
+            "run_id": run_id,
+            "seed": seed,
+            "frac": frac,
+            "success": False,
+            "error": f"Timed out after {timeout_seconds}s: {exc}",
+            "output_tag": tag,
+        }
+
     if result.returncode != 0:
         return {
             "year": year,
@@ -76,7 +92,14 @@ def run_one(
             "output_tag": tag,
         }
 
-    summary_path = K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_summary_{tag}.json"
+    if experiment_name:
+        summary_path = K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_summary_{tag}.json"
+    else:
+        summary_path = K_SELECTION_DIR / str(year) / f"k_selection_summary_{tag}.json"
+    if not summary_path.exists() and experiment_name:
+        fallback_summary_path = K_SELECTION_DIR / str(year) / f"k_selection_summary_{tag}.json"
+        if fallback_summary_path.exists():
+            summary_path = fallback_summary_path
     if not summary_path.exists():
         return {
             "year": year,
@@ -226,13 +249,15 @@ def main() -> int:
         help="Target donor-pool proportions passed to selector",
     )
     parser.add_argument("--no-full-pool", action="store_true", help="Disable auto full-pool candidate in selector")
-    parser.add_argument("--experiment-name", type=str, default="full_pool")
+    parser.add_argument("--experiment-name", type=str, default="", help="Optional legacy experiment namespace")
     parser.add_argument("--analysis-base-dir", type=str, default="data/processed_data/rev_analysis_low")
     parser.add_argument("--config-path", type=str, default="balancing/balancing_config.R")
+    parser.add_argument("--timeout-seconds", type=int, default=7200, help="Per-run timeout for selector subprocess")
+    parser.add_argument("--force-recompute", action="store_true", help="Force recomputation in selector (disable cache reuse)")
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
 
-    out_dir = Path(args.out_dir) if args.out_dir else (K_SELECTION_DIR / args.experiment_name / "robustness")
+    out_dir = Path(args.out_dir) if args.out_dir else ((K_SELECTION_DIR / args.experiment_name / "robustness") if args.experiment_name else (K_SELECTION_DIR / "robustness"))
 
     records = []
     run_counter = 0
@@ -252,6 +277,8 @@ def main() -> int:
                 target_pool_proportions=args.target_pool_proportions,
                 include_full_pool=not args.no_full_pool,
                 config_path=args.config_path,
+                timeout_seconds=max(1, int(args.timeout_seconds)),
+                force_recompute=bool(args.force_recompute),
             )
             records.append(rec)
             if rec.get("success"):

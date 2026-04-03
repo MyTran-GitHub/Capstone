@@ -11,28 +11,11 @@ source("balancing/cbps_lambda_utils.R")
 source("balancing/balancing_config.R")
 get_diagnostics_config <- get("get_diagnostics_config", mode = "function")
 source("balancing/prepare_cbps_design.R")
+source("balancing/cli_utils.R")
 source("diagnostics/diagnostics_scripts/covariates/run_covariate_exploration.R")
 
 
 if (!exists('SKIP_IMPLEMENT_CBPS_MAIN') || !SKIP_IMPLEMENT_CBPS_MAIN) {
-
-parse_flag_value <- function(args, flag, default = NULL) {
-  # Supports both: --flag=value and --flag value
-  flag_eq <- paste0(flag, "=")
-  hit_eq <- args[startsWith(args, flag_eq)]
-  if (length(hit_eq) > 0) return(sub(flag_eq, "", hit_eq[1], fixed = TRUE))
-  idx <- which(args == flag)
-  if (length(idx) > 0 && idx[1] < length(args)) return(args[idx[1] + 1])
-  default
-}
-
-parse_bool_flag <- function(x, default = FALSE) {
-  if (is.null(x) || length(x) == 0 || is.na(x)) return(default)
-  lx <- tolower(as.character(x)[1])
-  if (lx %in% c("1", "true", "t", "yes", "y")) return(TRUE)
-  if (lx %in% c("0", "false", "f", "no", "n")) return(FALSE)
-  default
-}
 
 cli_args <- commandArgs(trailingOnly = TRUE)
 area <- parse_flag_value(cli_args, "--area", "conifer")
@@ -66,12 +49,6 @@ if (exists("RECORD_LAMBDA_PATH")) {
 }
 
 outDir <- "data/processed_data/rev_analysis_low/"
-resolve_experiment_dir <- function(base_dir, experiment_name) {
-  base_norm <- normalizePath(base_dir, winslash = "/", mustWork = FALSE)
-  if (basename(base_norm) == experiment_name) return(base_dir)
-  file.path(base_dir, experiment_name)
-}
-
 result_out_dir <- resolve_experiment_dir(outDir, experiment_name)
 lambda_run_out_dir <- resolve_experiment_dir(lambda_run_out_dir, experiment_name)
 diag_out_dir <- resolve_experiment_dir(diag_out_dir, experiment_name)
@@ -83,40 +60,47 @@ dir.create(diag_out_dir, recursive = TRUE, showWarnings = FALSE)
 # Focal treatment years with sufficient pre-treatment data
 years <- 2005:2020
 if (!is.null(year_arg)) {
-  years <- as.integer(strsplit(year_arg, ",", fixed = TRUE)[[1]])
+  years <- parse_years_list(year_arg, "--year")
 }
 if (!is.null(years_arg)) {
-  years <- as.integer(strsplit(years_arg, ",", fixed = TRUE)[[1]])
+  years <- parse_years_list(years_arg, "--years")
 }
 
+cfg <- get_diagnostics_config()
+
 for (treated.year in years) {
-  input_file <- paste0(outDir, "analysis_treated", treated.year, "_", area, ".RDS")
+  tryCatch({
+    input_file <- paste0(outDir, "analysis_treated", treated.year, "_", area, ".RDS")
 
-  # Reset per-year state to avoid leaking prior loop values.
-  res <- NULL
-  rho <- NA_real_
-  cand_df <- NULL
+    # Reset per-year state to avoid leaking prior loop values.
+    res <- NULL
+    rho <- NA_real_
+    cand_df <- NULL
   
-  cat("Processing year:", treated.year, "\n")
-  cat("  Experiment:", experiment_name, "\n")
+    cat("Processing year:", treated.year, "\n")
+    cat("  Experiment:", experiment_name, "\n")
   
-  if (!file.exists(input_file)) {
-    cat("  File not found, skipping.\n")
-    next
-  }
+    if (!file.exists(input_file)) {
+      cat("  File not found, skipping.\n")
+      return(invisible(NULL))
+    }
   
-  df <- readRDS(input_file)
-  cfg <- get_diagnostics_config()
-  # Use canonical preprocessing function to prepare design matrix
-  prep <- prepare_cbps_design(df, opts = list(default_winsor_p = cfg$preprocessing$default_winsor_p))
-  W <- prep$W
-  X <- prep$X
-  X.scl <- prep$X.scl
+    df <- readRDS(input_file)
+    # Use canonical preprocessing function to prepare design matrix
+    prep <- prepare_cbps_design(df, opts = list(default_winsor_p = cfg$preprocessing$default_winsor_p))
+    W <- prep$W
+    X <- prep$X
+    X.scl <- prep$X.scl
 
-  # ------------------------------------------------------------------
-  # Lambda grid search + selection
-  n_ctrl <- sum(W == 0)
-  n_treated <- sum(W == 1)
+    # ------------------------------------------------------------------
+    # Lambda grid search + selection
+    n_ctrl <- sum(W == 0)
+    n_treated <- sum(W == 1)
+
+    if (n_ctrl == 0 || n_treated == 0) {
+      cat('  Invalid design matrix: n_ctrl =', n_ctrl, ', n_treated =', n_treated, '; skipping year.\n')
+      return(invisible(NULL))
+    }
 
   # First-pass grid (user-requested): very coarse but includes small values
   lambda_grid <- make_very_coarse_lambda_grid()
@@ -358,59 +342,56 @@ for (treated.year in years) {
   res$W <- W
 
   # Save fit results and weights before running diagnostics to prioritize outputs
-  saveRDS(res, paste0(result_out_dir, "/cbps_fit_", treated.year, "_", area, "_rho", rho, ".RDS"))
+  rho_token <- lambda_key(rho)
+  saveRDS(res, paste0(result_out_dir, "/cbps_fit_", treated.year, "_", area, "_rho", rho_token, ".RDS"))
   saveRDS(weights_df, paste0(result_out_dir, "/cbps_weights_", treated.year, "_", area, ".RDS"))
-  cat("  Saved: cbps_fit_", treated.year, "_", area, "_rho", rho, ".RDS\n", sep = "")
+  cat("  Saved: cbps_fit_", treated.year, "_", area, "_rho", rho_token, ".RDS\n", sep = "")
   cat("  Saved: cbps_weights_", treated.year, "_", area, ".RDS\n", sep = "")
+
+  run_covariate_diag <- function(write_lambda_plot, write_summary, fail_label) {
+    tryCatch({
+      run_covariate_exploration(
+        treated_year = treated.year,
+        area = area,
+        X = X,
+        W = W,
+        res = res,
+        cand_df = cand_df,
+        selected_lambda = rho,
+        out_dir = diag_out_dir,
+        write_lambda_plot = write_lambda_plot,
+        run_prefit_overlap = FALSE,
+        write_prepost_metrics = FALSE,
+        write_distribution = FALSE,
+        write_block_summary = FALSE,
+        write_summary = write_summary
+      )
+    }, error = function(e) {
+      cat("  ", fail_label, ": ", e$message, "\n", sep = "")
+    })
+  }
 
   # Optional lightweight lambda-path export without full covariate diagnostics.
   if (record_lambda_path && !record_covariate_diagnostics) {
-    tryCatch({
-      run_covariate_exploration(
-        treated_year = treated.year,
-        area = area,
-        X = X,
-        W = W,
-        res = res,
-        cand_df = cand_df,
-        selected_lambda = rho,
-        out_dir = diag_out_dir,
-        write_lambda_plot = TRUE,
-        run_prefit_overlap = FALSE,
-        write_prepost_metrics = FALSE,
-        write_distribution = FALSE,
-        write_block_summary = FALSE,
-        write_summary = FALSE
-      )
-    }, error = function(e) {
-      cat("  Lambda-path plotting failed: ", e$message, "\n", sep = "")
-    })
+    run_covariate_diag(
+      write_lambda_plot = TRUE,
+      write_summary = FALSE,
+      fail_label = "Lambda-path plotting failed"
+    )
   }
 
   if (record_covariate_diagnostics) {
-    tryCatch({
-      run_covariate_exploration(
-        treated_year = treated.year,
-        area = area,
-        X = X,
-        W = W,
-        res = res,
-        cand_df = cand_df,
-        selected_lambda = rho,
-        out_dir = diag_out_dir,
-        write_lambda_plot = FALSE,
-        run_prefit_overlap = FALSE,
-        write_prepost_metrics = FALSE,
-        write_distribution = FALSE,
-        write_block_summary = FALSE,
-        write_summary = TRUE
-      )
-    }, error = function(e) {
-      cat("  Covariate diagnostics failed: ", e$message, "\n", sep = "")
-    })
+    run_covariate_diag(
+      write_lambda_plot = FALSE,
+      write_summary = TRUE,
+      fail_label = "Covariate diagnostics failed"
+    )
   }
   
   gc()
+  }, error = function(e) {
+    cat("  ERROR processing year ", treated.year, ": ", e$message, "\n", sep = "")
+  })
 }
 
 } # end guard for SKIP_IMPLEMENT_CBPS_MAIN

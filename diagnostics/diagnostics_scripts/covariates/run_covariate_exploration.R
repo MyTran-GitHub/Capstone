@@ -15,6 +15,10 @@ suppressPackageStartupMessages({
   }
 })
 
+utils::globalVariables(c(
+  ".label", "is_selected", "lambda", "max_smd", "top10_share", "max_weight", "ess"
+))
+
 source("balancing/balancing_config.R")
 get_diagnostics_config <- get("get_diagnostics_config", mode = "function")
 
@@ -29,6 +33,20 @@ validate_output_df <- function(df, required_cols, key_cols, label) {
     for (nm in key_cols) {
       if (all(is.na(df[[nm]]))) stop(label, " has all-NA key column: ", nm)
     }
+  }
+}
+
+write_csv_atomic <- function(df, out_file) {
+  tmp_file <- tempfile(pattern = paste0(basename(out_file), ".tmp_"), tmpdir = dirname(out_file))
+  on.exit(if (file.exists(tmp_file)) unlink(tmp_file), add = TRUE)
+  write.csv(df, file = tmp_file, row.names = FALSE)
+  renamed <- file.rename(tmp_file, out_file)
+  if (!isTRUE(renamed)) {
+    copied <- file.copy(tmp_file, out_file, overwrite = TRUE)
+    if (!isTRUE(copied)) {
+      stop("Failed to write CSV output: ", out_file)
+    }
+    unlink(tmp_file)
   }
 }
 
@@ -92,6 +110,13 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
   }
   if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
 
+  required_cols <- c("lambda", "max_smd", "top10_share", "max_weight", "ess")
+  missing_cols <- setdiff(required_cols, colnames(df))
+  if (length(missing_cols) > 0) {
+    warning("Skipping lambda plot: missing required columns: ", paste(missing_cols, collapse = ", "))
+    return(invisible(NULL))
+  }
+
   cfg <- get_diagnostics_config()
   hard_gate <- cfg$lambda_selection$hard_gates
   hard_max_smd <- if (!is.null(hard_gate$max_smd)) as.numeric(hard_gate$max_smd) else 0.10
@@ -99,6 +124,15 @@ plot_lambda_diagnostics <- function(df, selected_lambda = NULL, out_file = NULL)
   hard_max_weight <- if (!is.null(hard_gate$max_weight)) as.numeric(hard_gate$max_weight) else 0.10
 
   df$lambda <- as.numeric(df$lambda)
+  valid_lambda <- is.finite(df$lambda) & df$lambda > 0
+  if (!all(valid_lambda)) {
+    warning("Dropping non-positive/non-finite lambda values for log-scale diagnostics plot")
+    df <- df[valid_lambda, , drop = FALSE]
+  }
+  if (nrow(df) == 0) {
+    warning("Skipping lambda plot: no valid positive lambda values after filtering")
+    return(invisible(NULL))
+  }
   df <- df[order(df$lambda), , drop = FALSE]
   df$feasible_strict <-
     !is.na(df$max_smd) & !is.na(df$top10_share) & !is.na(df$max_weight) &
@@ -290,25 +324,16 @@ run_covariate_exploration <- function(treated_year,
     overlap_fun <- get("screen_prefit_overlap", mode = "function")
     overlap_screen <- tryCatch(
       overlap_fun(X, W, thresholds = cfg$overlap_thresholds),
-      error = function(e) NULL
+      error = function(e) {
+        warning("Prefit overlap screening failed: ", e$message)
+        NULL
+      }
     )
     if (!is.null(overlap_screen)) {
-      write.csv(
-        overlap_screen$overlap,
-        file = prefit_overlap_file,
-        row.names = FALSE
-      )
-      write.csv(
-        overlap_screen$summary,
-        file = prefit_summary_file,
-        row.names = FALSE
-      )
+        write_csv_atomic(overlap_screen$overlap, prefit_overlap_file)
+        write_csv_atomic(overlap_screen$summary, prefit_summary_file)
       if (!is.null(overlap_screen$block_summary) && nrow(overlap_screen$block_summary) > 0) {
-        write.csv(
-          overlap_screen$block_summary,
-          file = prefit_block_file,
-          row.names = FALSE
-        )
+          write_csv_atomic(overlap_screen$block_summary, prefit_block_file)
       }
     }
   }
@@ -379,6 +404,9 @@ run_covariate_exploration <- function(treated_year,
     dist_df <- NULL
   } else {
     total_covariates <- ncol(X)
+    if (!is.finite(total_covariates) || total_covariates <= 0) {
+      stop("X has no covariate columns after preprocessing")
+    }
     cov_rows <- vector("list", total_covariates)
     log_progress <- !is.null(progress_every) && is.finite(progress_every) && progress_every > 0
     if (log_progress) {
@@ -484,8 +512,9 @@ run_covariate_exploration <- function(treated_year,
     dist_df <- if (write_distribution && length(dist_rows) > 0) do.call(rbind, dist_rows) else NULL
   }
 
-  cov_df <- do.call(rbind, cov_rows)
-  dist_df <- if (write_distribution && length(dist_rows) > 0) do.call(rbind, dist_rows) else NULL
+  if (is.null(cov_df) || nrow(cov_df) == 0) {
+    stop("No covariate diagnostics rows were generated")
+  }
 
   summarize_slice <- function(g, row_type, block_name, include_weight_metrics = FALSE) {
     qsafe <- function(x, p) {
@@ -497,6 +526,12 @@ run_covariate_exploration <- function(treated_year,
     mean_post <- mean(g$abs_smd_post, na.rm = TRUE)
     denom <- ifelse(is.finite(mean_pre) && mean_pre > 0, mean_pre, NA_real_)
     reduction_pct <- ifelse(is.na(denom), NA_real_, 100 * (mean_pre - mean_post) / denom)
+
+    frac_le <- function(x, threshold) {
+      valid <- is.finite(x)
+      if (!any(valid)) return(NA_real_)
+      mean(x[valid] <= threshold)
+    }
 
     data.frame(
       year = treated_year,
@@ -514,21 +549,25 @@ run_covariate_exploration <- function(treated_year,
       abs_smd_post_p50 = qsafe(g$abs_smd_post, 0.50),
       abs_smd_post_p90 = qsafe(g$abs_smd_post, 0.90),
       abs_smd_post_p95 = qsafe(g$abs_smd_post, 0.95),
-      abs_smd_post_max = max(g$abs_smd_post, na.rm = TRUE),
-      pct_cov_abs_smd_le_0_10 = mean(g$abs_smd_post <= 0.10, na.rm = TRUE),
-      pct_cov_abs_smd_le_0_05 = mean(g$abs_smd_post <= 0.05, na.rm = TRUE),
+      abs_smd_post_max = ifelse(any(is.finite(g$abs_smd_post)), max(g$abs_smd_post, na.rm = TRUE), NA_real_),
+      pct_cov_abs_smd_le_0_10 = frac_le(g$abs_smd_post, 0.10),
+      pct_cov_abs_smd_le_0_05 = frac_le(g$abs_smd_post, 0.05),
       mean_abs_smd_reduction_pct = reduction_pct,
       stringsAsFactors = FALSE
     )
   }
 
   overall_row <- summarize_slice(cov_df, row_type = "overall", block_name = "all", include_weight_metrics = TRUE)
-  block_df <- do.call(
-    rbind,
-    lapply(split(cov_df, cov_df$block), function(g) {
-      summarize_slice(g, row_type = "block", block_name = g$block[1], include_weight_metrics = FALSE)
-    })
-  )
+  block_df <- data.frame()
+  split_blocks <- split(cov_df, cov_df$block)
+  if (length(split_blocks) > 0) {
+    block_df <- do.call(
+      rbind,
+      lapply(split_blocks, function(g) {
+        summarize_slice(g, row_type = "block", block_name = g$block[1], include_weight_metrics = FALSE)
+      })
+    )
+  }
   if (!is.null(block_df) && nrow(block_df) > 0) {
     block_df <- block_df[order(-block_df$abs_smd_post_p90, -block_df$abs_smd_post_max), , drop = FALSE]
     rownames(block_df) <- NULL
@@ -556,34 +595,30 @@ run_covariate_exploration <- function(treated_year,
   }
 
   if (write_prepost_metrics) {
-    write.csv(
+    write_csv_atomic(
       cov_df,
-      file = file.path(out_dir, paste0("covariate_prepost_metrics_", treated_year, "_", area, ".csv")),
-      row.names = FALSE
+      file.path(out_dir, paste0("covariate_prepost_metrics_", treated_year, "_", area, ".csv"))
     )
   }
   if (write_distribution && !is.null(dist_df) && nrow(dist_df) > 0) {
-    write.csv(
+    write_csv_atomic(
       dist_df,
-      file = file.path(out_dir, paste0("covariate_distribution_", treated_year, "_", area, ".csv")),
-      row.names = FALSE
+      file.path(out_dir, paste0("covariate_distribution_", treated_year, "_", area, ".csv"))
     )
   }
   if (write_block_summary) {
     block_rows <- scorecard_df[scorecard_df$row_type == "block", , drop = FALSE]
     if (nrow(block_rows) > 0) {
-      write.csv(
+      write_csv_atomic(
         block_rows,
-        file = file.path(out_dir, paste0("covariate_block_summary_", treated_year, "_", area, ".csv")),
-        row.names = FALSE
+        file.path(out_dir, paste0("covariate_block_summary_", treated_year, "_", area, ".csv"))
       )
     }
   }
   if (write_summary) {
-    write.csv(
+    write_csv_atomic(
       scorecard_df,
-      file = file.path(out_dir, paste0("covariate_summary_", treated_year, "_", area, ".csv")),
-      row.names = FALSE
+      file.path(out_dir, paste0("covariate_summary_", treated_year, "_", area, ".csv"))
     )
   }
 

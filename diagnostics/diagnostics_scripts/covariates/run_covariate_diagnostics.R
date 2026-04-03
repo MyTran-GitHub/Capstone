@@ -7,20 +7,21 @@
 #   Rscript diagnostics/diagnostics_scripts/covariates/run_covariate_diagnostics.R \
 #     --year 2019 --area conifer
 
+source("balancing/cli_utils.R")
 source("diagnostics/diagnostics_scripts/covariates/run_covariate_exploration.R")
-
-parse_flag_value <- function(args, flag, default = NULL) {
-  flag_eq <- paste0(flag, "=")
-  hit_eq <- args[startsWith(args, flag_eq)]
-  if (length(hit_eq) > 0) return(sub(flag_eq, "", hit_eq[1], fixed = TRUE))
-  idx <- which(args == flag)
-  if (length(idx) > 0 && idx[1] < length(args)) return(args[idx[1] + 1])
-  default
-}
+parse_flag_value <- get("parse_flag_value", mode = "function")
+parse_years_list <- get("parse_years_list", mode = "function")
 
 args <- commandArgs(trailingOnly = TRUE)
-year <- as.integer(parse_flag_value(args, "--year", NA))
+year_vals <- parse_years_list(parse_flag_value(args, "--year", ""), "--year")
+if (is.null(year_vals) || length(year_vals) != 1) {
+  stop("Missing or invalid --year argument; provide exactly one year")
+}
+year <- as.integer(year_vals[1])
 area <- parse_flag_value(args, "--area", "conifer")
+if (!nzchar(trimws(area))) {
+  stop("Invalid --area argument: must be a non-empty string")
+}
 out_dir <- parse_flag_value(args, "--out-dir", "diagnostics/diagnostics_results/covariates")
 lambda_run_file <- parse_flag_value(
   args,
@@ -28,26 +29,28 @@ lambda_run_file <- parse_flag_value(
   sprintf("diagnostics/diagnostics_results/lambda_run/lambda_run_%d_%s.rds", year, area)
 )
 
-if (is.na(year)) {
-  stop("Missing required --year argument.")
-}
-
 if (!file.exists(lambda_run_file)) {
-  legacy_lambda_run <- sprintf("data/processed_data/rev_analysis_low/lambda_run_%d_%s.rds", year, area)
+  legacy_lambda_run <- sprintf("data/processed_data/lambda_run_%d_%s.rds", year, area)
   if (file.exists(legacy_lambda_run)) {
     lambda_run_file <- legacy_lambda_run
   }
 }
 
 if (!file.exists(lambda_run_file)) {
+  default_lambda_run <- sprintf("diagnostics/diagnostics_results/lambda_run/lambda_run_%d_%s.rds", year, area)
+  legacy_lambda_run <- sprintf("data/processed_data/lambda_run_%d_%s.rds", year, area)
   stop("lambda_run file not found. Checked: ",
-       sprintf("diagnostics/diagnostics_results/lambda_run/lambda_run_%d_%s.rds", year, area),
-       " and legacy path in data/processed_data/rev_analysis_low")
+       default_lambda_run,
+       " and ",
+       legacy_lambda_run)
 }
 
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-cand_df <- readRDS(lambda_run_file)
+cand_df <- tryCatch(
+  readRDS(lambda_run_file),
+  error = function(e) stop("Failed to read lambda_run file: ", lambda_run_file, " (", e$message, ")")
+)
 if (!is.data.frame(cand_df) || nrow(cand_df) == 0) {
   stop("lambda_run file does not contain candidate data.frame rows: ", lambda_run_file)
 }

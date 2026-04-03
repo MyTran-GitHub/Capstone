@@ -131,11 +131,13 @@ def decide_recommendation(
                 "rationale": rationale,
             }
 
+        preferred_candidate = policy_default_k if policy_default_k is not None else (rob_mode if rob_mode is not None else k_min)
+        preferred_k = int(min(max(int(preferred_candidate), int(k_min)), int(k_max)))
         recommendation = {
             "type": "range",
             "k": int(k_min),
             "k_range": [int(k_min), int(k_max)],
-            "preferred_k": int(policy_default_k if policy_default_k is not None else (rob_mode if rob_mode is not None else k_min)),
+            "preferred_k": preferred_k,
         }
 
     return {
@@ -202,8 +204,8 @@ def main() -> int:
     parser.add_argument(
         "--experiment-name",
         type=str,
-        default="full_pool",
-        help="Experiment namespace used by K-selection artifacts",
+        default="",
+        help="Optional legacy experiment namespace used by K-selection artifacts",
     )
     parser.add_argument(
         "--year",
@@ -244,9 +246,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.year is not None:
-        base_scope = K_SELECTION_DIR / args.experiment_name / str(args.year)
+        base_scope = (K_SELECTION_DIR / args.experiment_name / str(args.year)) if args.experiment_name else (K_SELECTION_DIR / str(args.year))
     else:
-        base_scope = K_SELECTION_DIR / args.experiment_name
+        base_scope = (K_SELECTION_DIR / args.experiment_name) if args.experiment_name else K_SELECTION_DIR
 
     policy_path = Path(args.policy_json) if args.policy_json else (base_scope / "policy" / "default_k_policy.json")
     robustness_path = Path(args.robustness_json) if args.robustness_json else (base_scope / "robustness" / "k_robustness_summary.json")

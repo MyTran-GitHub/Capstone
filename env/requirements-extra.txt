@@ -1,0 +1,18 @@
+# Extra Python packages used by pipeline and diagnostics.
+# Use after: pip install -r data_processing/Preparation/requirements.txt
+planetary-computer
+pystac
+umap-learn
+rasterio
+mgrs
+seaborn
+scikit-learn
+pyproj
+shapely
+xarray
+zarr
+netCDF4
+fsspec
+aiohttp
+requests
+pyshp
