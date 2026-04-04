@@ -3,7 +3,8 @@
 Aggregate K-selection diagnostics across cohorts and recommend a default K policy.
 
 Reads per-year diagnostics from:
-  Embeddings/data/k_selection/<year>/k_selection_rmse.csv
+    Embeddings/data/k_selection/<year>/k_selection_effective_pool.csv
+    (falls back to legacy k_selection_rmse.csv when needed)
 
 Outputs:
   - cohort_k_policy_summary.csv
@@ -96,9 +97,17 @@ def apply_feasible_and_plateau_rules(
     n_treated: int,
     gates: Optional[Dict[str, float]] = None,
     rmse_plateau_mult: float = 1.05,
-    ess_plateau_frac: float = 0.90,
+    ess_plateau_frac: float = 0.80,
 ) -> Tuple[pd.DataFrame, Dict]:
     d = df.copy()
+    if "representative_K" not in d.columns and "K" in d.columns:
+        d["representative_K"] = d["K"]
+    if "K" not in d.columns and "representative_K" in d.columns:
+        d["K"] = d["representative_K"]
+
+    rmse_col = "median_RMSE" if ("median_RMSE" in d.columns and d["median_RMSE"].notna().any()) else "rmse"
+    p90_col = "p90_RMSE" if ("p90_RMSE" in d.columns and d["p90_RMSE"].notna().any()) else None
+
     gates = gates or {}
     gate_max_smd = float(gates.get("max_smd", 0.10))
     gate_top10_share = float(gates.get("top10_share", 0.70))
@@ -110,9 +119,11 @@ def apply_feasible_and_plateau_rules(
         full_pool = float(d["pool_size"].max()) if len(d) > 0 else float("nan")
         d["pool_prop_full"] = d["pool_size"] / full_pool if math.isfinite(full_pool) and full_pool > 0 else float("nan")
         d["coverage_ratio"] = d["pool_size"] / max(1, n_treated)
+        d["compression_ratio"] = full_pool / d["pool_size"].clip(lower=1) if math.isfinite(full_pool) and full_pool > 0 else float("nan")
     else:
         d["pool_prop_full"] = float("nan")
         d["coverage_ratio"] = float("nan")
+        d["compression_ratio"] = float("nan")
 
     has_required = all(c in d.columns for c in ["max_balance_std", "ess_control", "top10_share", "pool_size"])
     if has_required:
@@ -123,14 +134,30 @@ def apply_feasible_and_plateau_rules(
             ],
             axis=1,
         ).max(axis=1)
-        feasible = (
+        feasible_hard = (
             (d["max_balance_std"] <= gate_max_smd)
             & (d["ess_control"] >= d["required_ess_floor"])
             & (d["top10_share"] <= gate_top10_share)
         )
         if "max_weight_share" in d.columns:
-            feasible = feasible & (d["max_weight_share"] <= gate_max_weight_share)
-        d["feasible"] = feasible
+            feasible_hard = feasible_hard & (d["max_weight_share"] <= gate_max_weight_share)
+
+        required_ess_relaxed = pd.concat(
+            [
+                pd.Series(1.2 * n_treated, index=d.index),
+                gate_ess_frac_floor * d["pool_size"],
+            ],
+            axis=1,
+        ).max(axis=1)
+        feasible_relaxed = (
+            (d["max_balance_std"] <= 0.15)
+            & (d["ess_control"] >= required_ess_relaxed)
+            & (d["top10_share"] <= 0.75)
+        )
+
+        d["feasible_hard"] = feasible_hard
+        d["feasible_relaxed"] = feasible_relaxed
+        d["feasible"] = feasible_hard | feasible_relaxed
     else:
         d["required_ess_floor"] = float("nan")
         # Conservative fallback for old files.
@@ -141,42 +168,48 @@ def apply_feasible_and_plateau_rules(
 
     feasible_df = d[d["feasible"]].copy()
     if feasible_df.empty:
-        pick = d.sort_values(["rmse", "pool_size", "K"], na_position="last").iloc[0]
+        pick = d.sort_values([rmse_col, "pool_size", "representative_K"], na_position="last").iloc[0]
         return d, {
-            "chosen_K": int(pick["K"]),
-            "selection_mode": "fallback_min_rmse",
-            "rmse_best": float(pick["rmse"]) if "rmse" in pick else float("nan"),
+            "chosen_K": int(pick["representative_K"]),
+            "chosen_pool_size": int(pick["pool_size"]),
+            "selection_mode": "fallback_min_rmse_overall",
+            "rmse_best": float(pick[rmse_col]) if rmse_col in pick else float("nan"),
             "plateau_K": [],
         }
 
-    rmse_best = float(feasible_df["rmse"].min())
+    rmse_best = float(feasible_df[rmse_col].min())
+    p90_best = float(feasible_df[p90_col].min()) if p90_col is not None else float("nan")
     if "ess_control" in feasible_df.columns and feasible_df["ess_control"].notna().any():
         ess_best = float(feasible_df["ess_control"].max())
         plateau_df = feasible_df[
-            (feasible_df["rmse"] <= rmse_plateau_mult * rmse_best)
+            (feasible_df[rmse_col] <= rmse_plateau_mult * rmse_best)
             & (feasible_df["ess_control"] >= ess_plateau_frac * ess_best)
         ].copy()
     else:
-        plateau_df = feasible_df[feasible_df["rmse"] <= rmse_plateau_mult * rmse_best].copy()
+        plateau_df = feasible_df[feasible_df[rmse_col] <= rmse_plateau_mult * rmse_best].copy()
+
+    if p90_col is not None:
+        plateau_df = plateau_df[plateau_df[p90_col] <= rmse_plateau_mult * p90_best].copy()
 
     if plateau_df.empty:
-        plateau_df = feasible_df.nsmallest(1, "rmse").copy()
+        plateau_df = feasible_df.nsmallest(1, rmse_col).copy()
 
     for c in ["max_weight_share", "top10_share", "ess_control", "pool_size", "K"]:
         if c not in plateau_df.columns:
             plateau_df[c] = float("nan")
 
     pick = plateau_df.sort_values(
-        ["ess_control", "top10_share", "max_weight_share", "pool_size", "K"],
-        ascending=[False, True, True, True, True],
+        ["pool_size", "top10_share", "max_weight_share", "ess_control", "representative_K"],
+        ascending=[True, True, True, False, True],
         na_position="last",
     ).iloc[0]
 
     return d, {
-        "chosen_K": int(pick["K"]),
+        "chosen_K": int(pick["representative_K"]),
+        "chosen_pool_size": int(pick["pool_size"]),
         "selection_mode": "feasible_plateau_smallest_pool",
         "rmse_best": rmse_best,
-        "plateau_K": sorted(plateau_df["K"].dropna().astype(int).unique().tolist()),
+        "plateau_K": sorted(plateau_df["representative_K"].dropna().astype(int).unique().tolist()),
     }
 
 
@@ -188,11 +221,19 @@ def aggregate_policy(years: List[int], out_dir: Path, experiment_name: str, inpu
 
     for year in years:
         suffix = f"_{input_tag}" if input_tag else ""
-        fp = (K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_rmse{suffix}.csv") if experiment_name else (K_SELECTION_DIR / str(year) / f"k_selection_rmse{suffix}.csv")
+        fp = (K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_effective_pool{suffix}.csv") if experiment_name else (K_SELECTION_DIR / str(year) / f"k_selection_effective_pool{suffix}.csv")
         if not fp.exists() and experiment_name:
-            fallback_fp = K_SELECTION_DIR / str(year) / f"k_selection_rmse{suffix}.csv"
+            fallback_fp = K_SELECTION_DIR / str(year) / f"k_selection_effective_pool{suffix}.csv"
             if fallback_fp.exists():
                 fp = fallback_fp
+        if not fp.exists() and experiment_name:
+            legacy_fp = K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_rmse{suffix}.csv"
+            if legacy_fp.exists():
+                fp = legacy_fp
+        if not fp.exists():
+            legacy_fp = K_SELECTION_DIR / str(year) / f"k_selection_rmse{suffix}.csv"
+            if legacy_fp.exists():
+                fp = legacy_fp
         if not fp.exists():
             logger.warning("Skipping %s: missing %s", year, fp)
             continue
@@ -206,21 +247,33 @@ def aggregate_policy(years: List[int], out_dir: Path, experiment_name: str, inpu
         rename_map = {
             "rmse_test": "rmse",
             "n_control": "pool_size",
+            "chosen_K": "representative_K",
         }
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns:
                 df[new] = df[old]
 
-        required = ["K", "rmse", "pool_size"]
+        required = ["pool_size"]
         missing = [c for c in required if c not in df.columns]
         if missing:
             logger.warning("Skipping %s: missing required columns %s", year, missing)
             continue
 
+        if "representative_K" not in df.columns and "K" in df.columns:
+            df["representative_K"] = df["K"]
+        if "K" not in df.columns and "representative_K" in df.columns:
+            df["K"] = df["representative_K"]
+
         df["K"] = pd.to_numeric(df["K"], errors="coerce")
-        df["rmse"] = pd.to_numeric(df["rmse"], errors="coerce")
+        if "rmse" in df.columns:
+            df["rmse"] = pd.to_numeric(df["rmse"], errors="coerce")
+        if "median_RMSE" in df.columns:
+            df["median_RMSE"] = pd.to_numeric(df["median_RMSE"], errors="coerce")
+        if "p90_RMSE" in df.columns:
+            df["p90_RMSE"] = pd.to_numeric(df["p90_RMSE"], errors="coerce")
         df["pool_size"] = pd.to_numeric(df["pool_size"], errors="coerce")
-        df = df[df["K"].notna() & df["rmse"].notna() & df["pool_size"].notna()].copy()
+        rmse_col = "median_RMSE" if ("median_RMSE" in df.columns and df["median_RMSE"].notna().any()) else "rmse"
+        df = df[df["K"].notna() & df[rmse_col].notna() & df["pool_size"].notna()].copy()
         if df.empty:
             logger.warning("Skipping %s: no usable K/rmse/pool_size rows after numeric coercion", year)
             continue
@@ -254,8 +307,9 @@ def aggregate_policy(years: List[int], out_dir: Path, experiment_name: str, inpu
             {
                 "year": year,
                 "chosen_K": chosen_k,
+                "chosen_pool_size": int(pick.get("chosen_pool_size", chosen_row.get("pool_size", float("nan")))),
                 "selection_mode": pick["selection_mode"],
-                "rmse": float(chosen_row.get("rmse", float("nan"))),
+                "rmse": float(chosen_row.get(rmse_col, float("nan"))),
                 "max_balance_std": float(chosen_row.get("max_balance_std", float("nan"))),
                 "ess_control": float(chosen_row.get("ess_control", float("nan"))),
                 "top10_share": float(chosen_row.get("top10_share", float("nan"))),

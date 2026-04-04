@@ -1,6 +1,7 @@
 """Core K-selection evaluation engine extracted from CLI orchestration script."""
 
 import json
+import hashlib
 import logging
 import re
 import shlex
@@ -21,6 +22,60 @@ DATA_DIR = BASE_DIR / "data"
 CBPS_INTEGRATION_DIR = DATA_DIR / "cbps_integration"
 
 logger = logging.getLogger(__name__)
+
+
+def _canonicalize_rolling_windows(rolling_windows: Optional[List[Dict[str, int]]]) -> List[Dict[str, int]]:
+    if not rolling_windows:
+        return []
+    canonical = []
+    for row in rolling_windows:
+        canonical.append({
+            "window_id": str(row.get("window_id", "")),
+            "train_start": int(row.get("train_start")),
+            "train_end": int(row.get("train_end")),
+            "test_start": int(row.get("test_start")),
+            "test_end": int(row.get("test_end")),
+        })
+    return canonical
+
+
+def _build_eval_context(train_years: List[int], test_years: List[int], rolling_windows: Optional[List[Dict[str, int]]]) -> Dict:
+    payload = {
+        "train_years": [int(y) for y in train_years],
+        "test_years": [int(y) for y in test_years],
+        "rolling_windows": _canonicalize_rolling_windows(rolling_windows),
+    }
+    signature = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    payload["eval_signature"] = signature
+    return payload
+
+
+def _cache_meta_path(year: int, output_prefix: str) -> Path:
+    return CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_meta_{output_prefix}_{year}.json"
+
+
+def _write_cache_meta(year: int, output_prefix: str, train_years: List[int], test_years: List[int], rolling_windows: Optional[List[Dict[str, int]]]) -> None:
+    meta_path = _cache_meta_path(year, output_prefix)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _build_eval_context(train_years, test_years, rolling_windows)
+    meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _cache_meta_matches(year: int, output_prefix: str, train_years: List[int], test_years: List[int], rolling_windows: Optional[List[Dict[str, int]]]) -> bool:
+    meta_path = _cache_meta_path(year, output_prefix)
+    if not meta_path.exists():
+        return False
+    try:
+        current = _build_eval_context(train_years, test_years, rolling_windows)
+        cached = json.loads(meta_path.read_text(encoding="utf-8"))
+        return (
+            cached.get("eval_signature") == current.get("eval_signature") and
+            cached.get("train_years") == current.get("train_years") and
+            cached.get("test_years") == current.get("test_years") and
+            cached.get("rolling_windows") == current.get("rolling_windows")
+        )
+    except Exception:
+        return False
 
 def get_k_nearest_union(similarities: Dict[int, np.ndarray], K: int) -> Set[int]:
     """
@@ -69,6 +124,7 @@ def get_k_pool_diagnostics(
         "pool_size": int(pool_size),
         "pool_prop_full": float(pool_prop_full),
         "coverage_ratio": float(coverage_ratio),
+        "support_similarity_mean": float(np.nanmean(all_topk_arr)),
         "support_similarity_min": float(np.nanmin(all_topk_arr)),
         "support_similarity_p10": float(np.nanpercentile(all_topk_arr, 10)),
         "support_similarity_median": float(np.nanmedian(all_topk_arr)),
@@ -90,30 +146,115 @@ def build_pool_diagnostics_table(
     return pd.DataFrame(rows).sort_values("K").reset_index(drop=True)
 
 
-def map_candidates_to_target_proportions(
-    pool_df: pd.DataFrame,
-    target_pool_proportions: List[float],
-) -> Tuple[List[int], pd.DataFrame]:
-    """Map target donor-pool proportions to nearest realized K points."""
+def build_discovery_k_grid(max_k_possible: int) -> List[int]:
+    """Step 1: dense K scan to discover reachable effective pool sizes."""
+    if max_k_possible <= 300:
+        return list(range(1, int(max_k_possible) + 1))
+
+    linear_grid = np.linspace(1, max_k_possible, num=150, dtype=int).tolist()
+    log_grid = np.geomspace(1, max_k_possible, num=150, dtype=int).astype(int).tolist()
+    return sorted(set(linear_grid + log_grid + [1, int(max_k_possible)]))
+
+
+def compress_effective_pool_grid(
+    unique_pool_df: pd.DataFrame,
+    max_points: int = 25,
+    target_points: int = 16,
+) -> pd.DataFrame:
+    """Step 2: keep an evenly spaced subset of effective pool sizes when grid is too large."""
+    if unique_pool_df.empty:
+        return unique_pool_df
+    if len(unique_pool_df) <= max_points:
+        return unique_pool_df.reset_index(drop=True)
+
+    target_points = max(12, min(int(target_points), int(max_points)))
+    idx = np.linspace(0, len(unique_pool_df) - 1, num=target_points)
+    idx = sorted(set(int(round(i)) for i in idx))
+    idx[0] = 0
+    idx[-1] = len(unique_pool_df) - 1
+    return unique_pool_df.iloc[idx].sort_values('pool_size').reset_index(drop=True)
+
+
+def compute_donor_hash_for_k(similarities: Dict[int, np.ndarray], embeddings_df: pd.DataFrame, K: int) -> str:
+    """Hash sorted donor unit IDs for a specific K to detect identical donor pools."""
+    selected_controls = get_k_nearest_union(similarities, int(K))
+    selected_units = embeddings_df.loc[list(selected_controls), 'unit'].astype(str).tolist()
+    selected_units_sorted = sorted(selected_units)
+    payload = "\n".join(selected_units_sorted).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def build_unique_pool_frontier(pool_df: pd.DataFrame) -> pd.DataFrame:
+    """Return the unique-pool frontier using the smallest K for each realized pool size."""
     if pool_df.empty:
-        return [], pd.DataFrame()
+        return pd.DataFrame()
 
-    unique_targets = sorted(set(float(x) for x in target_pool_proportions if x > 0))
-    mapped_rows = []
-    for target in unique_targets:
-        idx = (pool_df["pool_prop_full"] - target).abs().idxmin()
-        row = pool_df.loc[idx].copy()
-        row["target_pool_prop_full"] = target
-        row["target_abs_error"] = abs(float(row["pool_prop_full"]) - target)
-        mapped_rows.append(row)
+    d = pool_df.copy()
+    d['K'] = pd.to_numeric(d['K'], errors='coerce')
+    d['pool_size'] = pd.to_numeric(d['pool_size'], errors='coerce')
+    d = d.dropna(subset=['K', 'pool_size']).copy()
+    if d.empty:
+        return pd.DataFrame()
 
-    mapping_df = pd.DataFrame(mapped_rows)
-    if mapping_df.empty:
-        return [], mapping_df
+    d['K'] = d['K'].astype(int)
+    d['pool_size'] = d['pool_size'].astype(int)
+    d = d.sort_values(['pool_size', 'K']).drop_duplicates(subset=['pool_size'], keep='first')
+    return d.reset_index(drop=True)
 
-    mapping_df = mapping_df.sort_values(["target_pool_prop_full", "K"]).reset_index(drop=True)
-    mapped_k = sorted(set(mapping_df["K"].astype(int).tolist()))
-    return mapped_k, mapping_df
+
+def _warn_if_pool_frontier_saturated(frontier_df: pd.DataFrame, n_controls_full: int) -> None:
+    """Stage 3 guard: warn (without stopping) when frontier design variation is too limited."""
+    if frontier_df.empty:
+        logger.warning("Embedding donor pools saturate too quickly - limited design variation.")
+        return
+
+    unique_count = int(frontier_df['pool_size'].nunique())
+    pool_range = int(frontier_df['pool_size'].max() - frontier_df['pool_size'].min())
+    range_frac = float(pool_range / max(1, int(n_controls_full)))
+    if unique_count < 5 or range_frac < 0.05:
+        logger.warning("Embedding donor pools saturate too quickly - limited design variation.")
+
+
+def select_phase2_pool(effective_pool_df: pd.DataFrame, full_control_pool: int) -> Dict[str, int]:
+    """Step 7: choose the largest embedding-filtered pool strictly smaller than full pool."""
+    if effective_pool_df.empty:
+        raise ValueError("Cannot select phase-2 pool from empty frontier")
+
+    d = effective_pool_df.copy()
+    d['pool_size'] = pd.to_numeric(d['pool_size'], errors='coerce').astype(int)
+    d['representative_K'] = pd.to_numeric(d.get('representative_K', d.get('K', np.nan)), errors='coerce').astype(int)
+    eligible = d[d['pool_size'] < int(full_control_pool)].copy()
+    if eligible.empty:
+        eligible = d.copy()
+    pick = eligible.sort_values(['pool_size', 'representative_K']).iloc[-1]
+    return {
+        'selected_pool_size': int(pick['pool_size']),
+        'selected_K': int(pick['representative_K']),
+        'selection_rule': 'largest_pool_before_full',
+        'purpose': 'phase2_comparison',
+    }
+
+
+def _validate_k_candidates(K_candidates: List[int], max_k_possible: int) -> None:
+    bad = [int(k) for k in K_candidates if int(k) <= 0 or int(k) > int(max_k_possible)]
+    if bad:
+        raise ValueError(
+            f"Invalid K candidates detected: {sorted(set(bad))}. Allowed range is [1, {int(max_k_possible)}]."
+        )
+
+
+def _validate_pool_diagnostics(pool_df: pd.DataFrame, n_controls_full: int) -> None:
+    if pool_df.empty:
+        raise ValueError("Pool diagnostics table is empty")
+    if (pool_df['pool_size'] > int(n_controls_full)).any():
+        bad = pool_df.loc[pool_df['pool_size'] > int(n_controls_full), ['K', 'pool_size']]
+        raise ValueError(f"pool_size exceeds full controls for rows: {bad.to_dict(orient='records')[:5]}")
+
+    d = pool_df.sort_values('K').copy()
+    diffs = d['pool_size'].diff().fillna(0)
+    if (diffs < 0).any():
+        bad_rows = d.loc[diffs < 0, ['K', 'pool_size']]
+        raise ValueError(f"pool_size is not monotone non-decreasing in K: {bad_rows.to_dict(orient='records')[:5]}")
 
 
 def build_rolling_windows(start_year: int,
@@ -142,27 +283,17 @@ def build_rolling_windows(start_year: int,
     return windows
 
 
-def adaptive_k_search(best_k: int, max_k_possible: int) -> List[int]:
-    """Generate local refinement K candidates around a preliminary best K."""
-    seeds = [0.67, 0.80, 0.90, 1.10, 1.25, 1.50]
-    additive = [-80, -40, -20, 20, 40, 80]
-    candidates = set()
-    for mult in seeds:
-        k = int(round(best_k * mult))
-        if 1 <= k <= max_k_possible:
-            candidates.add(k)
-    for delta in additive:
-        k = int(best_k + delta)
-        if 1 <= k <= max_k_possible:
-            candidates.add(k)
-    candidates.discard(int(best_k))
-    return sorted(candidates)
-
-
 def write_pipeline_commands(
     output_dir: Path,
     year: int,
     optimal_k: int,
+    selected_controls_csv: Path,
+    train_start_year: int,
+    train_end_year: int,
+    test_start_year: int,
+    test_end_year: int,
+    analysis_base_dir: str,
+    save_full_weights: bool,
     experiment_name: str,
     output_tag: str,
     placebo_draws: int,
@@ -193,7 +324,10 @@ def write_pipeline_commands(
             "name": "run_cbps_optimal_k",
             "command": (
                 f"Rscript Embeddings/scripts/04_run_cbps_with_selected_controls.R {year} "
-                f"k{optimal_k} --experiment-name {experiment_name}"
+                f"'{selected_controls_csv.as_posix()}' k{optimal_k}{tag_suffix} "
+                f"{int(train_start_year)} {int(train_end_year)} {int(test_start_year)} {int(test_end_year)} "
+                f"--experiment-name {experiment_name} --analysis-base-dir {analysis_base_dir} "
+                f"--save-full-weights {'true' if save_full_weights else 'false'}"
             ),
             "description": "Run CBPS with the selected embedding donor pool.",
         },
@@ -308,9 +442,8 @@ def write_pipeline_commands(
 def run_random_pool_experiment(
     similarities: Dict[int, np.ndarray],
     embeddings_df: pd.DataFrame,
-    K_values: List[int],
+    effective_pool_table: pd.DataFrame,
     year: int,
-    pool_lookup: Dict[int, Dict[str, float]],
     random_reps: int = 20,
     output_tag: str = "",
     experiment_name: str = "full_pool",
@@ -321,7 +454,7 @@ def run_random_pool_experiment(
     train_years: Optional[List[int]] = None,
     test_years: Optional[List[int]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Run null benchmark by random control pool sampling matched to realized embedding pool size."""
+    """Run null benchmark by random control sampling matched to each realized pool frontier size."""
     rng = np.random.default_rng(random_seed)
     n_treated = len(similarities)
     control_idx = embeddings_df.index[embeddings_df["treated"] == 0].to_numpy()
@@ -331,15 +464,19 @@ def run_random_pool_experiment(
 
     rows = []
     logger.info("\n[RANDOM] Running random donor-pool benchmark: reps=%s", random_reps)
-    for K in K_values:
-        target_pool = int(pool_lookup.get(K, {}).get("pool_size", 0))
+    if effective_pool_table.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    for _, frontier_row in effective_pool_table.sort_values('pool_size').iterrows():
+        rep_k = int(frontier_row.get('representative_K', frontier_row.get('K', np.nan)))
+        target_pool = int(frontier_row.get('pool_size', 0))
         if target_pool <= 0:
             continue
         target_pool = min(target_pool, len(control_idx))
-        logger.info("[RANDOM] K=%s target pool size=%s", K, target_pool)
+        logger.info("[RANDOM] representative_K=%s target pool size=%s", rep_k, target_pool)
         for rep in range(1, random_reps + 1):
             sampled = rng.choice(control_idx, size=target_pool, replace=False)
-            output_prefix = f"random_k{K}_rep{rep}" + (f"_{output_tag}" if output_tag else "")
+            output_prefix = f"random_pool{target_pool}_k{rep_k}_rep{rep}" + (f"_{output_tag}" if output_tag else "")
             result = run_cbps_crossval(
                 embeddings_df=embeddings_df,
                 selected_controls=set(int(x) for x in sampled.tolist()),
@@ -354,7 +491,8 @@ def run_random_pool_experiment(
             )
             rows.append({
                 "method": "random",
-                "K": int(K),
+                "K": int(rep_k),
+                "representative_K": int(rep_k),
                 "rep": int(rep),
                 "pool_size": int(target_pool),
                 "pool_prop_full": float(target_pool / max(1, len(control_idx))),
@@ -375,10 +513,10 @@ def run_random_pool_experiment(
         return rep_df, rep_df
 
     summary = (
-        rep_df.groupby("K", as_index=False)
+        rep_df.groupby(["pool_size", "representative_K"], as_index=False)
         .agg(
-            pool_size=("pool_size", "median"),
             pool_prop_full=("pool_prop_full", "median"),
+            coverage_ratio=("coverage_ratio", "median"),
             median_RMSE=("median_RMSE", "median"),
             p90_RMSE=("p90_RMSE", "median"),
             median_ess_control=("ess_control", "median"),
@@ -387,7 +525,7 @@ def run_random_pool_experiment(
             median_max_weight_share=("max_weight_share", "median"),
             reps=("rep", "count"),
         )
-        .sort_values("K")
+        .sort_values(["pool_size", "representative_K"])
         .reset_index(drop=True)
     )
     summary["method"] = "random"
@@ -475,29 +613,147 @@ def filter_by_elbow(elbow_df: pd.DataFrame,
     return filtered_K
 
 
-def check_pool_sizes(pool_df: pd.DataFrame,
-                     n_treated: int,
-                     min_ratio: int = 10) -> List[int]:
-    """
-    Check which K values produce large enough control pools
-    Args:
-        min_ratio: minimum controls = min_ratio × n_treated
-    Returns:
-        List of valid K values
-    """
-    logger.info(f"\nStep 2: Checking pool sizes (min required: {min_ratio} × {n_treated} = {min_ratio * n_treated})...")
-    min_controls_required = min_ratio * n_treated
-    valid_K = []
-    for _, row in pool_df.sort_values("K").iterrows():
-        K = int(row["K"])
-        pool_size = int(row["pool_size"])
-        reduction_pct = 100 * (1 - float(row["pool_prop_full"]))
-        is_valid = pool_size >= min_controls_required
-        status = "✓ VALID" if is_valid else "✗ TOO SMALL"
-        logger.info(f"  K={K}: {pool_size} unique controls ({reduction_pct:.1f}% reduction) {status}")
-        if is_valid:
-            valid_K.append(K)
-    return valid_K
+def build_effective_pool_table(
+    rmse_df: pd.DataFrame,
+    full_control_pool: int,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Collapse K-level results into a frontier keyed by realized pool_size."""
+    if rmse_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    d = rmse_df.copy()
+    d = d[d['pool_size'].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    d['pool_size'] = pd.to_numeric(d['pool_size'], errors='coerce')
+    d = d[d['pool_size'].notna()].copy()
+    d['pool_size'] = d['pool_size'].astype(int)
+    d['K'] = pd.to_numeric(d['K'], errors='coerce').astype(int)
+
+    metric_cols = [
+        'rmse', 'median_RMSE', 'p90_RMSE', 'max_RMSE',
+        'max_balance_std', 'mean_balance_std',
+        'ess_control', 'ess_ratio',
+        'top10_share', 'max_weight_share',
+        'support_similarity_min', 'support_similarity_p10', 'support_similarity_median',
+    ]
+    metric_cols = [c for c in metric_cols if c in d.columns]
+
+    group_rows = []
+    sanity_rows = []
+    for pool_size, grp in d.groupby('pool_size', sort=True):
+        grp_sorted = grp.sort_values('K').copy()
+        rep = grp_sorted.iloc[0].copy()
+        rep['representative_K'] = int(rep['K'])
+        rep['k_values'] = ','.join(str(int(x)) for x in grp_sorted['K'].tolist())
+        rep['k_equivalent_count'] = int(len(grp_sorted))
+        rep['compression_ratio'] = float(full_control_pool / max(1, int(pool_size)))
+        group_rows.append(rep)
+
+        sanity = {
+            'pool_size': int(pool_size),
+            'representative_K': int(rep['K']),
+            'k_equivalent_count': int(len(grp_sorted)),
+            'k_values': rep['k_values'],
+        }
+        for col in metric_cols:
+            vals = pd.to_numeric(grp_sorted[col], errors='coerce').dropna()
+            spread = float(vals.max() - vals.min()) if not vals.empty else np.nan
+            sanity[f'{col}_spread'] = spread
+        sanity_rows.append(sanity)
+
+    effective_pool_table = pd.DataFrame(group_rows)
+    effective_pool_table = effective_pool_table.sort_values(['pool_size', 'representative_K']).reset_index(drop=True)
+
+    ordered_cols = [
+        'pool_size',
+        'pool_prop_full',
+        'coverage_ratio',
+        'compression_ratio',
+        'representative_K',
+        'k_values',
+        'k_equivalent_count',
+        'rmse',
+        'median_RMSE',
+        'p90_RMSE',
+        'max_RMSE',
+        'max_balance_std',
+        'mean_balance_std',
+        'ess_control',
+        'ess_ratio',
+        'top10_share',
+        'max_weight_share',
+        'support_similarity_min',
+        'support_similarity_p10',
+        'support_similarity_median',
+    ]
+    existing_ordered = [c for c in ordered_cols if c in effective_pool_table.columns]
+    remaining = [c for c in effective_pool_table.columns if c not in existing_ordered]
+    effective_pool_table = effective_pool_table[existing_ordered + remaining]
+
+    sanity_df = pd.DataFrame(sanity_rows).sort_values('pool_size').reset_index(drop=True)
+    return effective_pool_table, sanity_df
+
+
+def build_pool_overlap_diagnostics(
+    similarities: Dict[int, np.ndarray],
+    effective_pool_table: pd.DataFrame,
+    year: int,
+) -> pd.DataFrame:
+    """Stage 5: adjacent frontier Jaccard overlap diagnostics."""
+    if effective_pool_table.empty:
+        return pd.DataFrame(columns=['year', 'pool_size', 'next_pool_size', 'jaccard_overlap'])
+
+    frontier = effective_pool_table.sort_values('pool_size').copy()
+    if 'representative_K' not in frontier.columns:
+        return pd.DataFrame(columns=['year', 'pool_size', 'next_pool_size', 'jaccard_overlap'])
+
+    rep_k = pd.to_numeric(frontier['representative_K'], errors='coerce').dropna().astype(int).tolist()
+    if len(rep_k) < 2:
+        return pd.DataFrame(columns=['year', 'pool_size', 'next_pool_size', 'jaccard_overlap'])
+
+    pools = []
+    sizes = []
+    for _, row in frontier.iterrows():
+        k_val = int(row['representative_K'])
+        pools.append(get_k_nearest_union(similarities, k_val))
+        sizes.append(int(row['pool_size']))
+
+    rows = []
+    for i in range(len(pools) - 1):
+        a = pools[i]
+        b = pools[i + 1]
+        union_size = len(a.union(b))
+        jaccard = float(len(a.intersection(b)) / union_size) if union_size > 0 else np.nan
+        rows.append({
+            'year': int(year),
+            'pool_size': int(sizes[i]),
+            'next_pool_size': int(sizes[i + 1]),
+            'jaccard_overlap': jaccard,
+        })
+
+    overlap_df = pd.DataFrame(rows)
+    if not overlap_df.empty and (overlap_df['jaccard_overlap'] > 0.98).all():
+        logger.warning("Donor pools nearly identical across frontier - metrics may appear flat.")
+    return overlap_df
+
+
+def _warn_if_metrics_invariant(effective_pool_df: pd.DataFrame) -> None:
+    """Stage 6: emit warning when key metrics are invariant across the frontier."""
+    if effective_pool_df.empty:
+        return
+
+    rmse_col = 'median_RMSE' if ('median_RMSE' in effective_pool_df.columns and effective_pool_df['median_RMSE'].notna().any()) else 'rmse'
+    std_rmse = float(pd.to_numeric(effective_pool_df.get(rmse_col, np.nan), errors='coerce').std(ddof=0))
+    std_ess = float(pd.to_numeric(effective_pool_df.get('ess_control', np.nan), errors='coerce').std(ddof=0))
+    _ = float(pd.to_numeric(effective_pool_df.get('top10_share', np.nan), errors='coerce').std(ddof=0))
+    _ = float(pd.to_numeric(effective_pool_df.get('max_weight_share', np.nan), errors='coerce').std(ddof=0))
+
+    if np.isfinite(std_rmse) and np.isfinite(std_ess) and std_rmse < 1e-4 and std_ess < 1.0:
+        logger.warning(
+            "Evaluation metrics invariant across donor pools. Possible saturation or low outcome signal."
+        )
 
 
 # REMOVED: split_pretreatment_data - unused placeholder function
@@ -567,6 +823,16 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
         FileNotFoundError: If metrics CSV not created by R
     """
     
+    # Validate selected control indices before any IO/CBPS calls.
+    if not selected_controls:
+        raise ValueError("selected_controls is empty")
+    idx_arr = np.array(list(selected_controls), dtype=int)
+    if (idx_arr < 0).any() or (idx_arr >= len(embeddings_df)).any():
+        raise ValueError("selected_controls contains out-of-range dataframe indices")
+    treated_flags = embeddings_df.loc[idx_arr, 'treated'].astype(int)
+    if (treated_flags == 1).any():
+        raise ValueError("selected_controls contains treated units")
+
     # Get unit IDs for selected controls
     # Note: selected_controls contains DataFrame indices (which are 0-based after reset_index)
     selected_units = embeddings_df.loc[list(selected_controls), 'unit'].tolist()
@@ -693,6 +959,13 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
         missing_cols = [col for col in required_cols if col not in metrics.columns]
         if missing_cols:
             raise ValueError(f"Metrics file missing required columns: {missing_cols}")
+        _write_cache_meta(
+            year=year,
+            output_prefix=output_prefix,
+            train_years=train_years,
+            test_years=test_years,
+            rolling_windows=rolling_windows,
+        )
         return {
             'rmse': float(metrics['rmse_test'].iloc[0]),
             'rmse_train': float(metrics['rmse_train'].iloc[0]),
@@ -767,11 +1040,13 @@ def compute_k_value(K: int, similarities: Dict[int, np.ndarray],
         
         
         # Return success result
+        donor_hash = compute_donor_hash_for_k(similarities, embeddings_df, K)
         return {
             'K': K,
             'pool_size': int(pool_info['pool_size']),
             'pool_prop_full': float(pool_info['pool_prop_full']),
             'coverage_ratio': float(pool_info['coverage_ratio']),
+            'support_similarity_mean': float(pool_info['support_similarity_mean']),
             'support_similarity_min': float(pool_info['support_similarity_min']),
             'support_similarity_p10': float(pool_info['support_similarity_p10']),
             'support_similarity_median': float(pool_info['support_similarity_median']),
@@ -786,6 +1061,7 @@ def compute_k_value(K: int, similarities: Dict[int, np.ndarray],
             'ess_ratio': result.get('ess_ratio', np.nan),
             'top10_share': result.get('top10_share', np.nan),
             'max_weight_share': result.get('max_weight_share', np.nan),
+            'donor_hash': donor_hash,
             'runtime_seconds': result.get('runtime_seconds', np.nan),
             'convergence': result['convergence'],
             'n_controls_used': result['n_controls_used'],
@@ -801,119 +1077,6 @@ def compute_k_value(K: int, similarities: Dict[int, np.ndarray],
         }
 
 
-def select_k_with_plateau(rmse_df: pd.DataFrame,
-                          n_treated: int,
-                          full_control_pool: int,
-                          rmse_plateau_mult: float = 1.05,
-                          ess_plateau_frac: float = 0.80,
-                          gates: Optional[Dict[str, float]] = None) -> Dict:
-    """
-    Select K by feasibility gates, RMSE plateau, ESS plateau, then parsimony.
-    """
-    d = rmse_df.copy()
-    rmse_col = 'median_RMSE' if ('median_RMSE' in d.columns and d['median_RMSE'].notna().any()) else 'rmse'
-    p90_col = 'p90_RMSE' if ('p90_RMSE' in d.columns and d['p90_RMSE'].notna().any()) else None
-    gates = gates or {}
-    gate_max_smd = float(gates.get("max_smd", 0.10))
-    gate_top10_share = float(gates.get("top10_share", 0.70))
-    gate_max_weight_share = float(gates.get("max_weight", 0.10))
-    gate_ess_frac_floor = float(gates.get("ess_frac", 0.02))
-    gate_ess_mult_treated = float(gates.get("ess_mult_treated", 1.5))
-
-    d['pool_prop_full'] = d['pool_size'] / max(1, full_control_pool)
-    d['coverage_ratio'] = d['pool_size'] / max(1, n_treated)
-    d['required_ess_floor'] = np.maximum(gate_ess_mult_treated * n_treated,
-                                         gate_ess_frac_floor * d['pool_size'])
-    d['feasibility_reasons'] = ''
-
-    has_required = all(col in d.columns for col in ['max_balance_std', 'ess_control', 'top10_share'])
-    if not has_required:
-        logger.warning("Feasibility columns missing (max_balance_std/ess_control/top10_share); using convergence-only fallback.")
-        d['feasible'] = (d.get('convergence', 0) == 1)
-        d['feasibility_reasons'] = np.where(d['feasible'], '', 'missing_required_columns')
-        feasible_df = d[d['feasible']].copy()
-        if feasible_df.empty:
-            pick = d.sort_values([rmse_col, 'pool_size', 'K']).iloc[0]
-            return {'chosen_K': int(pick['K']), 'selection_mode': 'fallback_min_rmse', 'table': d}
-    else:
-        def apply_gates(max_smd_thr: float, top10_thr: float, ess_mult_thr: float) -> pd.Series:
-            required_ess = np.maximum(ess_mult_thr * n_treated, gate_ess_frac_floor * d['pool_size'])
-            feas = (
-                (d['max_balance_std'] <= max_smd_thr) &
-                (d['ess_control'] >= required_ess) &
-                (d['top10_share'] <= top10_thr)
-            )
-            if 'max_weight_share' in d.columns:
-                feas = feas & (d['max_weight_share'] <= gate_max_weight_share)
-            return feas
-
-        feasible_hard = apply_gates(gate_max_smd, gate_top10_share, gate_ess_mult_treated)
-        feasible_relaxed = apply_gates(0.15, 0.75, 1.2)
-
-        d['feasible_hard'] = feasible_hard
-        d['feasible_relaxed'] = feasible_relaxed
-        d['feasible'] = feasible_hard | feasible_relaxed
-
-        reasons = []
-        reasons.append(np.where(d['max_balance_std'] > gate_max_smd, 'max_smd', ''))
-        reasons.append(np.where(d['ess_control'] < d['required_ess_floor'], 'ess_floor', ''))
-        reasons.append(np.where(d['top10_share'] > gate_top10_share, 'top10_share', ''))
-        if 'max_weight_share' in d.columns:
-            reasons.append(np.where(d['max_weight_share'] > gate_max_weight_share, 'max_weight', ''))
-        reason_df = pd.DataFrame(reasons).T
-        d['feasibility_reasons'] = reason_df.apply(
-            lambda x: ';'.join([v for v in x.tolist() if isinstance(v, str) and v]), axis=1
-        )
-
-        feasible_df = d[d['feasible_hard']].copy()
-        mode_prefix = 'feasible_hard'
-        if feasible_df.empty:
-            feasible_df = d[d['feasible_relaxed']].copy()
-            mode_prefix = 'feasible_relaxed'
-        if feasible_df.empty:
-            logger.warning("No feasible K under hard/relaxed gates; falling back to minimum RMSE overall.")
-            pick = d.sort_values([rmse_col, 'pool_size', 'K']).iloc[0]
-            return {'chosen_K': int(pick['K']), 'selection_mode': 'fallback_min_rmse_overall', 'table': d}
-
-    if 'mode_prefix' not in locals():
-        mode_prefix = 'feasible'
-
-    rmse_best = feasible_df[rmse_col].min()
-    plateau_mask = feasible_df[rmse_col] <= rmse_plateau_mult * rmse_best
-    if p90_col is not None:
-        p90_best = feasible_df[p90_col].min()
-        plateau_mask = plateau_mask & (feasible_df[p90_col] <= rmse_plateau_mult * p90_best)
-    plateau_df = feasible_df[plateau_mask].copy()
-
-    if (
-        'ess_control' in plateau_df.columns and
-        plateau_df['ess_control'].notna().any() and
-        0 < ess_plateau_frac <= 1
-    ):
-        ess_best = plateau_df['ess_control'].max()
-        ess_cutoff = ess_plateau_frac * ess_best
-        plateau_ess = plateau_df[plateau_df['ess_control'] >= ess_cutoff].copy()
-        if not plateau_ess.empty:
-            plateau_df = plateau_ess
-
-    if plateau_df.empty:
-        plateau_df = feasible_df.nsmallest(1, rmse_col).copy()
-
-    # Parsimonious ranking: smallest realized donor pool first.
-    sort_cols = ['pool_size', 'top10_share', 'max_weight_share', 'ess_control', 'K']
-    ascending = [True, True, True, False, True]
-    for col in ['max_weight_share']:
-        if col not in plateau_df.columns:
-            plateau_df[col] = np.nan
-    pick = plateau_df.sort_values(sort_cols, ascending=ascending, na_position='last').iloc[0]
-    return {
-        'chosen_K': int(pick['K']),
-        'selection_mode': f'{mode_prefix}_plateau_smallest_pool',
-        'table': d,
-        'rmse_best': float(rmse_best)
-    }
-
-
 def select_optimal_k(similarities: Dict[int, np.ndarray],
                     embeddings_df: pd.DataFrame,
                     K_candidates: List[int],
@@ -925,11 +1088,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
                     experiment_name: str = "full_pool",
                     analysis_base_dir: str = "data/processed_data/rev_analysis_low",
                     save_full_weights: bool = False,
-                    target_pool_proportions: Optional[List[float]] = None,
-                    include_full_pool: bool = True,
                     gates: Optional[Dict[str, float]] = None,
                     rolling_windows: Optional[List[Dict[str, int]]] = None,
-                    adaptive_refine: bool = True,
                     random_baseline_reps: int = 0,
                     random_seed: Optional[int] = None,
                     train_years: Optional[List[int]] = None,
@@ -968,64 +1128,43 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
 
     max_k_possible = min([arr.shape[0] for arr in similarities.values()])
 
-    if target_pool_proportions:
-        # Proportion-driven mode: build a broad scan over K, then map requested proportions
-        # to realized donor-pool sizes after similarity filtering.
-        if max_k_possible <= 250:
-            K_candidates_eff = list(range(1, max_k_possible + 1))
-        else:
-            linear_grid = np.linspace(1, max_k_possible, num=140, dtype=int).tolist()
-            log_grid = np.geomspace(1, max_k_possible, num=140, dtype=int).astype(int).tolist()
-            K_candidates_eff = sorted(set(linear_grid + log_grid + [1, int(max_k_possible)]))
-        logger.info(
-            "Primary driver: target donor-pool proportions %s (scan grid size=%s)",
-            [float(x) for x in target_pool_proportions],
-            len(K_candidates_eff),
-        )
-    else:
-        candidate_set = set(int(k) for k in K_candidates if int(k) > 0)
-        if include_full_pool:
-            candidate_set.add(int(max_k_possible))
-        K_candidates_eff = sorted(candidate_set)
-        logger.info("Primary driver: explicit K grid %s", K_candidates_eff)
+    # Step 1: discover all reachable effective pool sizes via dense K scan.
+    discovery_k = build_discovery_k_grid(max_k_possible)
+    logger.info("Pool discovery scan size: %s K values", len(discovery_k))
 
-    pool_df = build_pool_diagnostics_table(
+    pool_discovery_df = build_pool_diagnostics_table(
         similarities,
-        K_candidates_eff,
+        discovery_k,
         n_treated=n_treated,
         n_controls_full=n_controls,
     )
+    _validate_k_candidates(discovery_k, max_k_possible=max_k_possible)
+    _validate_pool_diagnostics(pool_discovery_df, n_controls_full=n_controls)
 
-    logger.info("Evaluating realized donor-pool targets at K values: %s", K_candidates_eff)
-    elbow_df = compute_elbow_metrics(similarities, K_candidates_eff)
+    elbow_df = compute_elbow_metrics(similarities, discovery_k)
 
-    # Stage 1 filter is now active: prune candidate K values by elbow/knee before CBPS runs.
-    elbow_kept = filter_by_elbow(elbow_df)
-    if elbow_kept:
-        K_candidates_eff = sorted(set(int(k) for k in elbow_kept))
-        logger.info("After similarity knee filter, keeping K values: %s", K_candidates_eff)
-    else:
-        logger.warning("Knee filter returned empty; retaining original K candidates.")
+    # Step 2: build experiment grid directly on unique effective pool sizes.
+    min_controls_required = int(min_ratio * n_treated)
+    unique_pool_df = build_unique_pool_frontier(pool_discovery_df)
+    unique_pool_df = unique_pool_df[unique_pool_df['pool_size'] >= min_controls_required].copy().reset_index(drop=True)
+    if unique_pool_df.empty:
+        logger.error("No effective donor pools satisfy minimum size requirement: %s", min_controls_required)
+        return None
+    pool_grid_df = compress_effective_pool_grid(unique_pool_df, max_points=25, target_points=16)
+    valid_K = sorted(pool_grid_df['K'].astype(int).tolist())
+    pool_df = pool_discovery_df[pool_discovery_df['K'].isin(valid_K)].copy().reset_index(drop=True)
+    mapping_df = pool_grid_df.rename(columns={
+        'pool_size': 'effective_pool_size',
+        'K': 'representative_K',
+    })[['effective_pool_size', 'representative_K', 'pool_prop_full', 'coverage_ratio']].copy()
 
-    pool_df = pool_df[pool_df['K'].isin(K_candidates_eff)].copy().reset_index(drop=True)
-    mapping_df = pd.DataFrame()
-    if target_pool_proportions:
-        mapped_k, mapping_df = map_candidates_to_target_proportions(pool_df, target_pool_proportions)
-        if mapped_k:
-            K_candidates_eff = mapped_k
-            pool_df = pool_df[pool_df['K'].isin(K_candidates_eff)].copy().reset_index(drop=True)
-            logger.info("Mapped target proportions to realized K values: %s", K_candidates_eff)
-        else:
-            logger.warning("Could not map target proportions to K values; using current filtered K set.")
+    # Stage 2 + 3 warning guard on selected grid.
+    initial_frontier = build_unique_pool_frontier(pool_df)
+    _warn_if_pool_frontier_saturated(initial_frontier, n_controls_full=n_controls)
 
     pool_lookup = pool_df.set_index('K').to_dict(orient='index')
-
-    valid_K = check_pool_sizes(pool_df, n_treated, min_ratio)
-    if not valid_K:
-        logger.error("No K values produce large enough control pools!")
-        logger.error(f"Try smaller min_ratio (current: {min_ratio}) or larger K values")
-        return None
-    logger.info(f"\nValid K values for RMSPE testing: {valid_K}")
+    logger.info("\nEffective-pool experiment grid contains %s points", len(valid_K))
+    logger.info("Representative K values: %s", valid_K)
 
     if force_recompute:
         for K in valid_K:
@@ -1034,6 +1173,9 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             if metrics_file.exists():
                 logger.info(f"🗑️  Deleting cached CBPS metrics for K={K} (--force-recompute)")
                 metrics_file.unlink()
+            meta_file = _cache_meta_path(year, output_prefix)
+            if meta_file.exists():
+                meta_file.unlink()
 
     rmse_results: Dict[int, Dict] = {}
 
@@ -1042,6 +1184,18 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
         if not metrics_file.exists() or force_recompute:
             return None
+        if not _cache_meta_matches(
+            year=year,
+            output_prefix=output_prefix,
+            train_years=train_years,
+            test_years=test_years,
+            rolling_windows=rolling_windows,
+        ):
+            logger.info(
+                "Ignoring stale cache for K=%s due to evaluation-split mismatch (or missing metadata).",
+                K,
+            )
+            return None
         metrics = pd.read_csv(metrics_file)
         pool_info = pool_lookup.get(K, {})
         return {
@@ -1049,6 +1203,7 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             'pool_size': int(pool_info.get('pool_size', np.nan)),
             'pool_prop_full': float(pool_info.get('pool_prop_full', np.nan)),
             'coverage_ratio': float(pool_info.get('coverage_ratio', np.nan)),
+            'support_similarity_mean': float(pool_info.get('support_similarity_mean', np.nan)),
             'support_similarity_min': float(pool_info.get('support_similarity_min', np.nan)),
             'support_similarity_p10': float(pool_info.get('support_similarity_p10', np.nan)),
             'support_similarity_median': float(pool_info.get('support_similarity_median', np.nan)),
@@ -1063,6 +1218,7 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             'ess_ratio': float(metrics['ess_ratio'].iloc[0]) if 'ess_ratio' in metrics.columns else np.nan,
             'top10_share': float(metrics['top10_share'].iloc[0]) if 'top10_share' in metrics.columns else np.nan,
             'max_weight_share': float(metrics['max_weight_share'].iloc[0]) if 'max_weight_share' in metrics.columns else np.nan,
+            'donor_hash': compute_donor_hash_for_k(similarities, embeddings_df, K),
             'runtime_seconds': float(metrics['runtime_seconds'].iloc[0]) if 'runtime_seconds' in metrics.columns else np.nan,
             'convergence': int(metrics['converged'].iloc[0]),
             'n_controls_used': int(metrics['n_control'].iloc[0])
@@ -1142,30 +1298,6 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
 
     rmse_df = pd.DataFrame(list(rmse_results.values()))
 
-    if adaptive_refine and not rmse_df.empty:
-        coarse_pick = select_k_with_plateau(
-            rmse_df=rmse_df,
-            n_treated=n_treated,
-            full_control_pool=n_controls,
-            gates=gates,
-        )
-        refine_candidates = adaptive_k_search(int(coarse_pick['chosen_K']), max_k_possible)
-        refine_candidates = [k for k in refine_candidates if k not in set(rmse_results.keys())]
-        if refine_candidates:
-            logger.info("\nAdaptive refinement candidates around K=%s: %s", coarse_pick['chosen_K'], refine_candidates)
-            refine_pool_df = build_pool_diagnostics_table(
-                similarities,
-                refine_candidates,
-                n_treated=n_treated,
-                n_controls_full=n_controls,
-            )
-            for _, row in refine_pool_df.iterrows():
-                pool_lookup[int(row['K'])] = row.to_dict()
-            pool_df = pd.concat([pool_df, refine_pool_df], ignore_index=True).drop_duplicates(subset=['K']).sort_values('K').reset_index(drop=True)
-            refine_valid = check_pool_sizes(refine_pool_df, n_treated, min_ratio)
-            evaluate_k_list(refine_valid, "refine")
-            rmse_df = pd.DataFrame(list(rmse_results.values()))
-
     # Standardized reporting aliases (pre-treatment diagnostics only).
     rmse_df['N_control_K'] = rmse_df.get('pool_size', np.nan)
     if 'median_RMSE' not in rmse_df.columns:
@@ -1188,20 +1320,43 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         logger.warning(f"  Failed K values: {sorted(failed_K)}")
         logger.warning(f"  (Check logs above for error details)")
     logger.info("")    
-    # Step 4: Select optimal K (feasible gates + plateau + smallest donor pool)
-    selection = select_k_with_plateau(
+    # Collapse repeated K rows that map to identical realized donor pools.
+    effective_pool_df, duplicate_sanity_df = build_effective_pool_table(
         rmse_df=rmse_df,
-        n_treated=n_treated,
         full_control_pool=n_controls,
-        gates=gates,
     )
-    optimal_K = selection['chosen_K']
-    objective_col = 'median_RMSE' if ('median_RMSE' in rmse_df.columns and rmse_df['median_RMSE'].notna().any()) else 'rmse'
-    optimal_rmse = rmse_df.loc[rmse_df['K'] == optimal_K, objective_col].iloc[0]
-    optimal_pool = rmse_df.loc[rmse_df['K'] == optimal_K, 'pool_size'].iloc[0]
+    if effective_pool_df.empty:
+        effective_pool_df = rmse_df.copy()
+        effective_pool_df['representative_K'] = effective_pool_df['K']
+        duplicate_sanity_df = pd.DataFrame()
+
+    # Step 4 + Step 7: donor-pool hash guard and phase-2 selection rule.
+    hash_dupes = int(effective_pool_df['donor_hash'].duplicated().sum()) if 'donor_hash' in effective_pool_df.columns else 0
+    if hash_dupes > 0:
+        logger.warning("Multiple grid points correspond to identical donor pools")
+
+    phase2 = select_phase2_pool(effective_pool_df, full_control_pool=n_controls)
+    optimal_K = int(phase2['selected_K'])
+    optimal_pool = int(phase2['selected_pool_size'])
+    selection_mode = str(phase2['selection_rule'])
+
+    selection_table = effective_pool_df.sort_values('pool_size').reset_index(drop=True)
+    overlap_df = build_pool_overlap_diagnostics(
+        similarities=similarities,
+        effective_pool_table=selection_table,
+        year=year,
+    )
+    _warn_if_metrics_invariant(selection_table)
+    objective_col = 'median_RMSE' if ('median_RMSE' in effective_pool_df.columns and effective_pool_df['median_RMSE'].notna().any()) else 'rmse'
+    optimal_rmse = float(
+        effective_pool_df.loc[
+            effective_pool_df['representative_K'] == optimal_K,
+            objective_col,
+        ].iloc[0]
+    )
     logger.info(f"\n{'='*80}")
-    logger.info(f"OPTIMAL K SELECTED: {optimal_K}")
-    logger.info(f"Selection mode: {selection['selection_mode']}")
+    logger.info(f"OPTIMAL POOL SELECTED: pool_size={optimal_pool} (representative K={optimal_K})")
+    logger.info(f"Selection mode: {selection_mode}")
     logger.info(f"Pre-treatment RMSE: {optimal_rmse:.4f}")
     logger.info(f"Control pool size: {optimal_pool}")
     logger.info(f"{'='*80}\n")    
@@ -1212,9 +1367,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             random_rep_df, random_summary_df = run_random_pool_experiment(
                 similarities=similarities,
                 embeddings_df=embeddings_df,
-                K_values=sorted(set(rmse_df['K'].astype(int).tolist())),
+                effective_pool_table=effective_pool_df,
                 year=year,
-                pool_lookup=pool_lookup,
                 random_reps=random_baseline_reps,
                 output_tag=output_tag,
                 experiment_name=experiment_name,
@@ -1230,14 +1384,31 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
 
     return {
         'optimal_K': int(optimal_K),
+        'selected_pool_size': int(optimal_pool),
         'optimal_rmse': float(optimal_rmse),
-        'selection_mode': selection['selection_mode'],
+        'selection_mode': selection_mode,
+        'selection_rule': selection_mode,
         'elbow_metrics': elbow_df,
-        'rmse_results': selection['table'],
+        'pool_discovery_scan': pool_discovery_df.sort_values('K').reset_index(drop=True),
+        'pool_size_grid': mapping_df.sort_values('effective_pool_size').reset_index(drop=True),
+        'rmse_results': rmse_df.sort_values('K').reset_index(drop=True),
+        'effective_pool_table': selection_table,
+        'effective_pool_duplicates': duplicate_sanity_df,
         'valid_K_values': all_tested,
         'all_similarities': similarities,
         'pool_diagnostics': pool_df,
         'pool_target_mapping': mapping_df,
+        'pool_overlap_diagnostics': overlap_df,
         'random_pool_replicates': random_rep_df,
         'random_pool_summary': random_summary_df,
+        'diagnostics': {
+            'n_treated': int(n_treated),
+            'full_control_pool': int(n_controls),
+            'n_k_evaluated': int(len(rmse_df)),
+            'n_effective_pool_rows': int(len(selection_table)),
+            'n_duplicate_pool_rows_collapsed': int(max(0, len(rmse_df) - len(selection_table))),
+            'selection_purpose': 'phase2_comparison',
+            'duplicate_donor_hash_rows': int(hash_dupes),
+        },
+        'plots': {},
     }

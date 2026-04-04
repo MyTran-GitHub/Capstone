@@ -64,6 +64,10 @@ enforce_ratio_gate <- ifelse(!is.null(arg_list$enforce_ratio_gate), as.character
 gate_ratio_max <- ifelse(!is.null(arg_list$gate_ratio_max), as.numeric(arg_list$gate_ratio_max), 20.0)
 donor_placebo_size <- ifelse(!is.null(arg_list$donor_placebo_size), as.integer(arg_list$donor_placebo_size), 1L)
 dry <- ifelse(!is.null(arg_list$dry), as.character(arg_list$dry), "false")
+allow_full_sample_randomization <- ifelse(!is.null(arg_list$allow_full_sample_randomization), as.character(arg_list$allow_full_sample_randomization), "false")
+min_valid_draws <- ifelse(!is.null(arg_list$min_valid_draws), as.integer(arg_list$min_valid_draws), max(50L, as.integer(0.10 * B)))
+max_false_positive_rate_05 <- ifelse(!is.null(arg_list$max_false_positive_rate_05), as.numeric(arg_list$max_false_positive_rate_05), 0.15)
+enforce_fp_rate_gate <- ifelse(!is.null(arg_list$enforce_fp_rate_gate), tolower(as.character(arg_list$enforce_fp_rate_gate)) %in% c("1", "true", "t", "yes"), FALSE)
 
 gate_max_abs_smd <- ifelse(!is.null(arg_list$gate_max_abs_smd), as.numeric(arg_list$gate_max_abs_smd), 0.10)
 gate_median_abs_smd <- ifelse(!is.null(arg_list$gate_median_abs_smd), as.numeric(arg_list$gate_median_abs_smd), 0.05)
@@ -97,6 +101,8 @@ run_one_year <- function(fake_year, run_idx) {
     paste0("enforce_ratio_gate=", enforce_ratio_gate),
     paste0("gate_ratio_max=", gate_ratio_max),
     paste0("donor_placebo_size=", as.integer(donor_placebo_size)),
+    paste0("allow_full_sample_randomization=", allow_full_sample_randomization),
+    paste0("min_valid_draws=", as.integer(min_valid_draws)),
     paste0("dry=", dry),
     paste0("gate_max_abs_smd=", gate_max_abs_smd),
     paste0("gate_median_abs_smd=", gate_median_abs_smd),
@@ -173,6 +179,13 @@ summary_df <- as.data.frame(summary_df)
 
 summary_csv <- file.path(out_dir, sprintf("temporal_placebo_summary_%s.csv", treated_year))
 fwrite(summary_df, summary_csv)
+
+if (nrow(summary_df) > 0 && any(!is.na(summary_df$false_positive_05))) {
+  fp_rate_05 <- mean(as.logical(summary_df$false_positive_05), na.rm = TRUE)
+  if (isTRUE(enforce_fp_rate_gate) && is.finite(fp_rate_05) && fp_rate_05 > max_false_positive_rate_05) {
+    stop(sprintf("Temporal placebo false-positive rate too high: %.3f > %.3f", fp_rate_05, max_false_positive_rate_05))
+  }
+}
 
 if (nrow(summary_df) > 0 && any(is.finite(summary_df$pval_rank))) {
   p <- ggplot(summary_df, aes(x = placebo_year, y = pval_rank)) +

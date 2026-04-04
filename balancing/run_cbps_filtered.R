@@ -81,13 +81,43 @@ resolve_output_dir <- function(output_base_dir, treated_year, output_experiment_
   file.path(output_scope, as.character(treated_year))
 }
 
+build_unit_key <- function(lat, lon, digits = 6L) {
+  sprintf(paste0("%.", as.integer(digits), "f|%.", as.integer(digits), "f"), as.numeric(lat), as.numeric(lon))
+}
+
 # -----------------------------------------------------------------------------
 # Analysis input loading and normalization
 # -----------------------------------------------------------------------------
 read_analysis_data <- function(treated_year, analysis_base_dir, experiment_name) {
   analysis_dir <- resolve_experiment_dir(analysis_base_dir, experiment_name)
-  input_csv <- file.path(analysis_dir, paste0("analysis_treated", treated_year, "_conifer.csv"))
-  input_rds <- file.path(analysis_dir, paste0("analysis_treated", treated_year, "_conifer.RDS"))
+  candidate_dirs <- unique(c(analysis_dir, analysis_base_dir))
+
+  input_csv <- NA_character_
+  input_rds <- NA_character_
+  for (dir_path in candidate_dirs) {
+    csv_path <- file.path(dir_path, paste0("analysis_treated", treated_year, "_conifer.csv"))
+    rds_path <- file.path(dir_path, paste0("analysis_treated", treated_year, "_conifer.RDS"))
+    if (file.exists(csv_path) || file.exists(rds_path)) {
+      input_csv <- csv_path
+      input_rds <- rds_path
+      break
+    }
+  }
+
+  if (is.na(input_csv) || is.na(input_rds)) {
+    searched <- vapply(
+      candidate_dirs,
+      function(dir_path) {
+        paste0(
+          file.path(dir_path, paste0("analysis_treated", treated_year, "_conifer.csv")),
+          " and ",
+          file.path(dir_path, paste0("analysis_treated", treated_year, "_conifer.RDS"))
+        )
+      },
+      character(1)
+    )
+    stop(paste("Input covariate data not found. Looked for", paste(searched, collapse = "; ")))
+  }
 
   if (file.exists(input_csv)) {
     df <- tryCatch({
@@ -122,6 +152,19 @@ read_analysis_data <- function(treated_year, analysis_base_dir, experiment_name)
   if (!"unit" %in% names(df)) stop("Input data missing 'unit' column")
   if (!"treated" %in% names(df)) stop("Input data missing 'treated' column")
 
+  treated_vals <- unique(as.integer(df$treated))
+  treated_vals <- treated_vals[!is.na(treated_vals)]
+  if (length(setdiff(treated_vals, c(0L, 1L))) > 0) {
+    stop("Input data has invalid treated values; expected only 0/1")
+  }
+
+  if (any(is.na(df$unit) | !nzchar(as.character(df$unit)))) {
+    stop("Input data contains missing/empty unit identifiers")
+  }
+  if (anyDuplicated(as.character(df$unit)) > 0) {
+    stop("Input data contains duplicate unit identifiers")
+  }
+
   df
 }
 
@@ -143,6 +186,11 @@ normalize_selected_units <- function(selected_units, df_full) {
   units <- unique(as.character(units))
   units <- units[!is.na(units) & nzchar(units)]
   if (length(units) == 0) stop("selected_units is empty after normalization")
+
+  missing_units <- setdiff(units, unique(as.character(df_full$unit)))
+  if (length(missing_units) > 0) {
+    stop(sprintf("selected_units includes %d units not found in analysis data", length(missing_units)))
+  }
 
   treated_units <- unique(as.character(df_full$unit[df_full$treated == 1]))
   overlap <- intersect(treated_units, units)
@@ -177,6 +225,9 @@ subset_design <- function(df_full, selected_units, preprocess_opts = list()) {
   if (length(rows) == 0) stop("No rows remain after filtering by selected units and treated units")
 
   df_sub <- df_full[rows, , drop = FALSE]
+  if (anyDuplicated(as.character(df_sub$unit)) > 0) {
+    stop("Filtered design has duplicate unit identifiers")
+  }
   prep <- prepare_cbps_design(df_sub, opts = preprocess_opts)
   X_sub <- prep$X.scl
   W_sub <- as.numeric(prep$W)
@@ -579,18 +630,23 @@ build_fire_outcome_cache <- function(weights_df,
 
   if (!('unit' %in% names(weights_df))) {
     if ('LATITUDE' %in% names(weights_df) && 'LONGITUDE' %in% names(weights_df)) {
-      weights_df$unit <- paste0(weights_df$LATITUDE, weights_df$LONGITUDE)
+      weights_df$unit <- build_unit_key(weights_df$LATITUDE, weights_df$LONGITUDE)
     } else {
       stop("weights_df must contain unit or LATITUDE/LONGITUDE columns")
     }
   }
 
-  fire_base$unit <- paste0(fire_base$LATITUDE, fire_base$LONGITUDE)
+  fire_base$unit <- build_unit_key(fire_base$LATITUDE, fire_base$LONGITUDE)
   fire_base$has.hifire95 <- 0L
   fire_base$has.hifire95[!is.na(fire_base$max_FRP) & fire_base$max_FRP >= 1000] <- 1L
 
   treated_units <- unique(weights_df$unit[weights_df$treated == 1])
   control_units <- unique(weights_df$unit[weights_df$treated == 0])
+
+  overlap_units <- intersect(treated_units, control_units)
+  if (length(overlap_units) > 0) {
+    stop(sprintf("Treated/control unit overlap detected in weighted data (n=%d)", length(overlap_units)))
+  }
 
   treated_panel <- data.frame()
   if (length(treated_units) > 0) {
@@ -609,13 +665,17 @@ build_fire_outcome_cache <- function(weights_df,
       c("year", "unit", "has.hifire95"),
       drop = FALSE
     ]
-    control_w <- weights_df[weights_df$unit %in% control_units, c("unit", "weight"), drop = FALSE]
-    control_obs <- merge(control_obs, control_w, by = "unit", all.x = TRUE, sort = FALSE)
-    control_obs$weight_hifire95 <- control_obs$weight * control_obs$has.hifire95
+    if (nrow(control_obs) == 0) {
+      synth <- data.frame(year = all_years, synth_hifire95 = NA_real_, stringsAsFactors = FALSE)
+    } else {
+      control_w <- weights_df[weights_df$unit %in% control_units, c("unit", "weight"), drop = FALSE]
+      control_obs <- merge(control_obs, control_w, by = "unit", all.x = TRUE, sort = FALSE)
+      control_obs$weight_hifire95 <- control_obs$weight * control_obs$has.hifire95
 
-    synth <- aggregate(cbind(weight_hifire95, weight) ~ year, data = control_obs, FUN = sum, na.rm = TRUE)
-    synth$synth_hifire95 <- ifelse(synth$weight > 0, synth$weight_hifire95 / synth$weight, NA_real_)
-    synth <- synth[, c("year", "synth_hifire95"), drop = FALSE]
+      synth <- aggregate(cbind(weight_hifire95, weight) ~ year, data = control_obs, FUN = sum, na.rm = TRUE)
+      synth$synth_hifire95 <- ifelse(synth$weight > 0, synth$weight_hifire95 / synth$weight, NA_real_)
+      synth <- synth[, c("year", "synth_hifire95"), drop = FALSE]
+    }
 
     treated_panel <- merge(treated_panel, synth, by = "year", all.x = TRUE, sort = FALSE)
     treated_panel$sq_err <- (treated_panel$has.hifire95 - treated_panel$synth_hifire95)^2
@@ -699,7 +759,8 @@ normalize_rolling_windows <- function(rolling_windows,
                                       train_start,
                                       train_end,
                                       test_start,
-                                      test_end) {
+                                      test_end,
+                                      treated_year = NULL) {
   if (is.null(rolling_windows) || length(rolling_windows) == 0) {
     return(data.frame(
       window_id = "w1",
@@ -744,6 +805,19 @@ normalize_rolling_windows <- function(rolling_windows,
   win_df <- win_df[, c("window_id", "train_start", "train_end", "test_start", "test_end"), drop = FALSE]
   win_df$window_id <- as.character(win_df$window_id)
   for (col in required_cols) win_df[[col]] <- as.integer(win_df[[col]])
+
+  if (any(win_df$train_end >= win_df$test_start, na.rm = TRUE)) {
+    stop("Invalid rolling windows: train_end must be strictly before test_start")
+  }
+  if (!is.null(treated_year)) {
+    if (any(win_df$test_end >= as.integer(treated_year), na.rm = TRUE)) {
+      stop("Invalid rolling windows: test_end must be strictly before treated_year")
+    }
+    if (any(win_df$train_end >= as.integer(treated_year), na.rm = TRUE)) {
+      stop("Invalid rolling windows: train_end must be strictly before treated_year")
+    }
+  }
+
   win_df
 }
 
@@ -861,7 +935,8 @@ run_cbps_filtered <- function(selected_units,
     train_start = train_start,
     train_end = train_end,
     test_start = test_start,
-    test_end = test_end
+    test_end = test_end,
+    treated_year = treated_year
   )
   subset <- subset_design(
     df_full,

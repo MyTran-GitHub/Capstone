@@ -31,8 +31,6 @@ def run_one(
     max_workers: int,
     experiment_name: str,
     analysis_base_dir: str,
-    target_pool_proportions: Optional[List[float]] = None,
-    include_full_pool: bool = True,
     config_path: str = "balancing/balancing_config.R",
     timeout_seconds: int = 7200,
     force_recompute: bool = False,
@@ -61,11 +59,6 @@ def run_one(
 
     if force_recompute:
         cmd += ["--force-recompute"]
-
-    if target_pool_proportions:
-        cmd += ["--target-pool-proportions"] + [str(x) for x in target_pool_proportions]
-    if not include_full_pool:
-        cmd += ["--no-full-pool"]
 
     logger.info("Running robustness selection: %s", " ".join(cmd))
     try:
@@ -241,14 +234,6 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=1234, help="Base random seed")
     parser.add_argument("--max-workers", type=int, default=6)
     parser.add_argument("--k-values", type=int, nargs="+", default=[5, 10, 20, 30, 50, 100])
-    parser.add_argument(
-        "--target-pool-proportions",
-        type=float,
-        nargs="+",
-        default=[0.005, 0.01, 0.02, 0.05, 0.10, 0.20, 1.0],
-        help="Target donor-pool proportions passed to selector",
-    )
-    parser.add_argument("--no-full-pool", action="store_true", help="Disable auto full-pool candidate in selector")
     parser.add_argument("--experiment-name", type=str, default="", help="Optional legacy experiment namespace")
     parser.add_argument("--analysis-base-dir", type=str, default="data/processed_data/rev_analysis_low")
     parser.add_argument("--config-path", type=str, default="balancing/balancing_config.R")
@@ -274,8 +259,6 @@ def main() -> int:
                 max_workers=args.max_workers,
                 experiment_name=args.experiment_name,
                 analysis_base_dir=args.analysis_base_dir,
-                target_pool_proportions=args.target_pool_proportions,
-                include_full_pool=not args.no_full_pool,
                 config_path=args.config_path,
                 timeout_seconds=max(1, int(args.timeout_seconds)),
                 force_recompute=bool(args.force_recompute),

@@ -51,6 +51,12 @@ validate_args <- function(args) {
   if (args$train_end >= args$test_start) {
     stop("Expected non-overlapping windows: train_end must be < test_start")
   }
+  if (args$test_end >= args$treated_year) {
+    stop("Expected pre-treatment evaluation only: test_end must be < treated_year")
+  }
+  if (args$train_end >= args$treated_year) {
+    stop("Expected pre-treatment evaluation only: train_end must be < treated_year")
+  }
 }
 
 read_rolling_windows <- function(path) {

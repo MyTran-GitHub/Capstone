@@ -1,66 +1,9 @@
-"""
-Optimal K Selection for Embedding-Based Control Selection
-Uses pre-treatment RMSPE cross-validation to select K
+"""Effective donor-pool diagnostic pipeline for embedding-based CBPS experiments.
 
-===== MECHANISM OVERVIEW =====
-
-This script optimizes K (number of nearest neighbors per treated pixel) using a 
-multi-stage filtering approach:
-
-STAGE 1: Elbow Analysis (Similarity-Based Filtering)
-  - Compute mean cosine similarity for each K candidate
-  - Identify "elbow" where similarity drops sharply (>2% decrease)
-  - Drop K after elbow (poor quality controls, sharp degradation)
-  - Example: K=[10,20,30,50,75,100], sim=[0.92,0.915,0.911,0.906,0.903,0.90]
-    → Δsim=[-0.005,-0.004,-0.005,-0.003,-0.003] (gradual)
-    → No sharp drop → Keep all K values
-
-STAGE 2: Pool Size Check (Statistical Power Filtering)  
-  - For each K, compute union of K-nearest controls across all treated pixels
-  - Require pool size ≥ min_ratio × n_treated (default: 10×)
-  - Drop K producing insufficient control pool
-  - Example: n_treated=100, K=[10,20,30,50] → pools=[500,800,1200,1500]
-    → min_ratio=10 requires ≥1000 controls → Keep K=[30,50]
-
-STAGE 3: Pre-treatment RMSPE Cross-Validation (Predictive Validity)
-  - Train: years 2000-2010 (fit CBPS weights)
-  - Test: years 2011-2015 (compute fire frequency RMSE)
-  - Select K with lowest test RMSE
-  - Example: K=30 (RMSE=0.12), K=50 (RMSE=0.09) → Optimal K=50
-
-===== R INTEGRATION MECHANISM =====
-
-run_cbps_crossval() calls run_cbps_with_selected_controls.R:
-
-1. Python writes selected control units to temp CSV
-2. R script loads analysis_treated{year}_conifer.RDS (full data)
-3. R filters to treated + selected controls ONLY
-4. R applies identical transformations as implement_cbps.R:
-   - Two-part SWE (presence + log-intensity winsorized)
-   - Log+winsorize max_FRP, prcp, avg_BRIGHTNESS
-   - Drop sparse fire_* columns (<0.5% ones)
-5. R runs CBPS with same regularization grid as baseline
-6. R computes pre-treatment RMSE via calculate_fire_outcomes.R
-7. R saves metrics CSV → Python reads and extracts RMSE
-
-CRITICAL: run_cbps_with_selected_controls.R MUST apply IDENTICAL transformations 
-as implement_cbps.R (baseline) to ensure fair comparison. Any discrepancy 
-invalidates the embedding vs baseline comparison.
-
-===== COMPARISON TO BASELINE =====
-
-- Baseline (implement_cbps.R): Full control pool (~50k pixels)
-- Embedding (run_cbps_with_selected_controls.R): Filtered pool (K-nearest, ~1-5k)
-- Both use: Same CBPS algorithm, same transformations, same train/test split
-- Difference: Control pool composition only
-===== LITERATURE CONTEXT =====
-K-NN selection via cross-validation is standard in ML (e.g., Hastie et al. 2009).
-Synthetic control hyperparameter tuning via RMSPE follows Abadie et al. (2015),
-Ben-Michael et al. (2021). The embedding approach combines both traditions.
-References:
-- Abadie et al. (2015): "Comparative Politics and the Synthetic Control Method"
-- Ben-Michael et al. (2021): "The Augmented Synthetic Control Method"  
-- Hastie et al. (2009): "The Elements of Statistical Learning"
+This script is a diagnostic exploration workflow, not a K optimizer.
+It scans reachable donor pools, evaluates CBPS across effective pool sizes,
+and writes figure-ready datasets for trend analysis of RMSE, balance,
+ESS, weight concentration, and embedding support.
 """
 
 import sys
@@ -74,6 +17,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(EMBEDDINGS_DIR))
 
 import logging
+import os
 import subprocess
 from typing import Dict
 
@@ -154,10 +98,27 @@ def load_lambda_hard_gates(config_path: str = "balancing/balancing_config.R") ->
     return default
 
 
+def _acquire_run_lock(year: int, experiment_name: str, output_tag: str) -> Path:
+    safe_tag = output_tag or "na"
+    lock_dir = K_SELECTION_DIR / str(year)
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f".k_selection_{experiment_name}_{safe_tag}.lock"
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.close(fd)
+    except FileExistsError:
+        raise ValueError(
+            f"Lock exists for year={year}, experiment={experiment_name}, output_tag={safe_tag}. "
+            "Another run may still be active. Remove lock only if stale."
+        )
+    return lock_path
+
+
 
 
 def main():
-    """Run optimal K selection on embeddings data
+    """Run effective donor-pool diagnostics on embeddings data
     Usage:
         python select_optimal_k.py [year]
     Args:
@@ -169,13 +130,13 @@ def main():
     # Parse command-line arguments
     import argparse
     parser = argparse.ArgumentParser(
-        description='Select optimal K for embedding-based control selection',
+        description='Run effective donor-pool diagnostics for embedding-based CBPS',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python select_optimal_k.py          # Process 2019 (default)
-  python select_optimal_k.py 2015     # Process 2015
-  python select_optimal_k.py 2008     # Process 2008
+    python select_optimal_k.py 2019 --stage all
+    python select_optimal_k.py 2019 --stage prepare
+    python select_optimal_k.py 2019 --stage all --output-tag trend2019
         """
     )
     parser.add_argument(
@@ -184,25 +145,6 @@ Examples:
         nargs='?',
         default=2019,
         help='Treatment year to process (default: 2019)'
-    )
-    parser.add_argument(
-        '--k-values',
-        type=int,
-        nargs='+',
-        default=None,
-        help='Optional fallback K seed values used only when target-pool-proportions is empty'
-    )
-    parser.add_argument(
-        '--target-pool-proportions',
-        type=float,
-        nargs='+',
-        default=[0.10, 0.20, 0.3, 0.40, 0.5, 0.60, 0.7, 0.8, 0.9, 1.0],
-        help='Target donor-pool proportions of full controls to evaluate (default: 0.10, 0.20, 0.3, 0.40, 0.5, 0.60, 0.7, 0.8, 0.9, 1.0)'
-    )
-    parser.add_argument(
-        '--no-full-pool',
-        action='store_true',
-        help='Do not automatically include full-pool candidate in proportion mapping'
     )
     parser.add_argument(
         '--min-ratio',
@@ -238,6 +180,16 @@ Examples:
         type=str,
         default='',
         help='Optional suffix tag for output files (e.g., boot1)'
+    )
+    parser.add_argument(
+        '--write-legacy-outputs',
+        action='store_true',
+        help='Also write legacy k_selection_* intermediate outputs (default: off; canonical outputs only)'
+    )
+    parser.add_argument(
+        '--write-frontier-plots',
+        action='store_true',
+        help='Auto-generate frontier PNG plots during pipeline run (default: off; use figure scripts instead)'
     )
     parser.add_argument(
         '--experiment-name',
@@ -324,15 +276,10 @@ Examples:
         help='Test end year for non-rolling evaluation (default: min(2015, treated_year-1))'
     )
     parser.add_argument(
-        '--no-adaptive-refine',
-        action='store_true',
-        help='Disable local adaptive K refinement around preliminary best K'
-    )
-    parser.add_argument(
         '--random-baseline-reps',
         type=int,
-        default=0,
-        help='Run random donor-pool benchmark with N replicates per K (default: 0/off)'
+        default=20,
+        help='Run random donor-pool benchmark with N replicates per pool size (default: 20)'
     )
     parser.add_argument(
         '--placebo-draws',
@@ -456,7 +403,9 @@ Examples:
     year = args.year    
     logger.info(f"Processing year: {year}")    
     logger.info(f"Stage: {args.stage}")
+    lock_path = None
     try:
+        lock_path = _acquire_run_lock(year=year, experiment_name=args.experiment_name, output_tag=args.output_tag)
         embeddings_df, subsample_frac = load_and_prepare_embeddings(year, args, logger)
         similarities, tag_suffix = load_or_compute_similarity_cache(
             embeddings_df=embeddings_df,
@@ -476,6 +425,7 @@ Examples:
             load_lambda_hard_gates,
             build_rolling_windows,
             logger,
+            treated_year=year,
         )
 
         results = select_optimal_k(
@@ -490,11 +440,8 @@ Examples:
             experiment_name=args.experiment_name,
             analysis_base_dir=args.analysis_base_dir,
             save_full_weights=args.save_full_weights,
-            target_pool_proportions=args.target_pool_proportions,
-            include_full_pool=not args.no_full_pool,
             gates=gates,
             rolling_windows=rolling_windows,
-            adaptive_refine=not args.no_adaptive_refine,
             random_baseline_reps=max(0, int(args.random_baseline_reps)),
             random_seed=args.random_seed,
             train_years=train_years,
@@ -528,6 +475,9 @@ Examples:
     except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 1
+    finally:
+        if lock_path is not None:
+            lock_path.unlink(missing_ok=True)
 
     return 0
 if __name__ == "__main__":

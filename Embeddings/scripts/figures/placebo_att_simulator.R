@@ -77,6 +77,10 @@ get_col <- function(dt, name) {
   rep(NA, nrow(dt))
 }
 
+build_unit_key <- function(lat, lon, digits = 6L) {
+  sprintf(paste0("%.", as.integer(digits), "f|%.", as.integer(digits), "f"), as.numeric(lat), as.numeric(lon))
+}
+
 as_firms_df <- function(firms_base) {
   if (inherits(firms_base, "sf")) {
     if (requireNamespace("sf", quietly = TRUE)) {
@@ -111,7 +115,7 @@ prepare_unit_year_fire_panel <- function(all_units, all_years, firms_rds_path = 
     stop("FIRMS data is missing LATITUDE/LONGITUDE/year columns")
   }
 
-  firms_base$unit <- paste0(firms_base$LATITUDE, firms_base$LONGITUDE)
+  firms_base$unit <- build_unit_key(firms_base$LATITUDE, firms_base$LONGITUDE)
   firms_base <- firms_base[firms_base$unit %in% all_units & firms_base$year %in% all_years, , drop = FALSE]
 
   if (!("max_FRP" %in% names(firms_base))) {
@@ -194,10 +198,16 @@ if (length(controls_idx) < n1) {
 all_units <- as.character(get_col(DT_complete, "unit"))
 if (all(is.na(all_units))) {
   if (("LATITUDE" %in% names(DT_complete)) && ("LONGITUDE" %in% names(DT_complete))) {
-    all_units <- paste0(DT_complete$LATITUDE, DT_complete$LONGITUDE)
+    all_units <- build_unit_key(DT_complete$LATITUDE, DT_complete$LONGITUDE)
   } else {
     stop("Need unit or LATITUDE/LONGITUDE to build unit IDs")
   }
+}
+if (any(is.na(all_units) | !nzchar(all_units))) {
+  stop("Invalid unit identifiers after normalization")
+}
+if (anyDuplicated(all_units) > 0) {
+  stop("Duplicate unit identifiers found in embedding cohort")
 }
 
 all_years <- sort(unique(c(2000:as.integer(max(post_years)), post_years)))
@@ -211,6 +221,9 @@ if (!is.null(arg_list$pre_years)) {
 if (length(pre_years) == 0) {
   stop("No pre_years available. Provide pre_years=YYYY,YYYY,...")
 }
+if (any(pre_years >= as.integer(year))) {
+  stop("pre_years must be strictly before the treated year")
+}
 cat("Using pre years:", paste(pre_years, collapse = ","), "\n")
 cat("Using post years:", paste(post_years, collapse = ","), "\n")
 
@@ -221,6 +234,10 @@ assignment_mode <- ifelse(!is.null(arg_list$assignment_mode), as.character(arg_l
 allowed_assignment_modes <- c("control_only", "full_sample_randomization", "donor_unit_placebo")
 if (!(assignment_mode %in% allowed_assignment_modes)) {
   stop("assignment_mode must be one of: ", paste(allowed_assignment_modes, collapse = ", "))
+}
+allow_full_sample_randomization <- ifelse(!is.null(arg_list$allow_full_sample_randomization), tolower(as.character(arg_list$allow_full_sample_randomization)) %in% c("1", "true", "t", "yes"), FALSE)
+if (assignment_mode == "full_sample_randomization" && !isTRUE(allow_full_sample_randomization)) {
+  stop("assignment_mode=full_sample_randomization is disabled by default; set allow_full_sample_randomization=true to override")
 }
 
 n_workers <- ifelse(!is.null(arg_list$n_workers), as.integer(arg_list$n_workers), 1L)
@@ -242,6 +259,8 @@ enforce_ratio_gate <- ifelse(!is.null(arg_list$enforce_ratio_gate), tolower(as.c
 
 donor_placebo_size <- ifelse(!is.null(arg_list$donor_placebo_size), as.integer(arg_list$donor_placebo_size), 1L)
 donor_placebo_size <- max(1L, donor_placebo_size)
+min_valid_draws <- ifelse(!is.null(arg_list$min_valid_draws), as.integer(arg_list$min_valid_draws), max(50L, as.integer(0.10 * B)))
+min_valid_draws <- max(1L, min_valid_draws)
 
 checkpoint_rds <- file.path(out_dir, sprintf("placebo_checkpoint_%s.rds", year))
 checkpoint_draws_csv <- file.path(out_dir, sprintf("placebo_draws_checkpoint_%s.csv", year))
@@ -553,6 +572,9 @@ if (length(pending_ids) > 0) {
 
 # summarize and plot
 valid <- draws_df$completed & draws_df$valid & !is.na(draws_df$placebo_att_post)
+if (sum(valid, na.rm = TRUE) < min_valid_draws) {
+  stop(sprintf("Insufficient valid placebo draws: %d < min_valid_draws=%d", sum(valid, na.rm = TRUE), min_valid_draws))
+}
 placebo_vals <- draws_df$placebo_att_post[valid]
 placebo_vals_abs <- abs(placebo_vals)
 pval_rank <- if (length(placebo_vals) > 0 && !is.na(obs_att)) mean(placebo_vals_abs >= abs(obs_att), na.rm = TRUE) else NA_real_

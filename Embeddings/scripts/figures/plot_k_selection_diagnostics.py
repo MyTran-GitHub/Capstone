@@ -21,10 +21,19 @@ logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s - %(
 logger = logging.getLogger(__name__)
 
 
-def load_diagnostics(year: int) -> pd.DataFrame:
-    fp = K_SELECTION_DIR / str(year) / "k_selection_rmse.csv"
+def load_diagnostics(year: int, experiment_name: str = "", output_tag: str = "") -> pd.DataFrame:
+    tag_suffix = f"_{output_tag}" if output_tag else ""
+    if experiment_name:
+        fp = K_SELECTION_DIR / experiment_name / str(year) / f"k_selection_rmse{tag_suffix}.csv"
+    else:
+        fp = K_SELECTION_DIR / str(year) / f"k_selection_rmse{tag_suffix}.csv"
     if not fp.exists():
-        raise FileNotFoundError(f"Missing diagnostics CSV: {fp}")
+        # Backward compatibility with legacy non-namespaced outputs.
+        legacy_fp = K_SELECTION_DIR / str(year) / f"k_selection_rmse{tag_suffix}.csv"
+        if legacy_fp.exists():
+            fp = legacy_fp
+        else:
+            raise FileNotFoundError(f"Missing diagnostics CSV: {fp}")
 
     df = pd.read_csv(fp)
     if df.empty:
@@ -107,6 +116,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Plot K-selection diagnostics for one cohort year")
     parser.add_argument("year", type=int, help="Cohort year (e.g., 2019)")
     parser.add_argument(
+        "--experiment-name",
+        type=str,
+        default="",
+        help="Optional legacy experiment namespace under Embeddings/data/k_selection",
+    )
+    parser.add_argument(
+        "--output-tag",
+        type=str,
+        default="",
+        help="Optional tag suffix used in k_selection_rmse_<tag>.csv",
+    )
+    parser.add_argument(
         "--out-file",
         type=str,
         default=None,
@@ -114,9 +135,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    out_file = Path(args.out_file) if args.out_file else FIGURES_DIR / f"k_selection_diagnostics_{args.year}.png"
+    name_prefix = f"{args.experiment_name}_" if args.experiment_name else ""
+    default_name = f"k_selection_diagnostics_{name_prefix}{args.year}.png"
+    out_file = Path(args.out_file) if args.out_file else FIGURES_DIR / default_name
 
-    df = load_diagnostics(args.year)
+    df = load_diagnostics(args.year, experiment_name=args.experiment_name, output_tag=args.output_tag)
     make_plot(df, args.year, out_file)
     return 0
 
