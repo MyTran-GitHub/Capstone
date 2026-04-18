@@ -1,3 +1,6 @@
+#' Shared design preparation for CBPS fitting and diagnostics.
+#'
+#' Provides function to prepare design matrix for CBPS from raw data frame, including robust standardization and anomaly construction.
 # Shared design preparation for CBPS fitting and diagnostics.
 
 source("balancing/balancing_config.R")

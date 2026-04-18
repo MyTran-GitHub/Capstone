@@ -575,6 +575,27 @@ build_fire_outcome_cache <- function(weights_df,
                                      windows_df,
                                      firms_data = NULL,
                                      firms_rds_path = "data/processed_data/FIRMS.RDS") {
+  make_match_key <- function(df, unit_col = "unit") {
+    out <- rep(NA_character_, nrow(df))
+    has_latlon <- ('LATITUDE' %in% names(df)) && ('LONGITUDE' %in% names(df))
+    if (has_latlon) {
+      lat_ok <- !is.na(df$LATITUDE)
+      lon_ok <- !is.na(df$LONGITUDE)
+      idx <- which(lat_ok & lon_ok)
+      if (length(idx) > 0) {
+        out[idx] <- paste0(as.character(df$LATITUDE[idx]), as.character(df$LONGITUDE[idx]))
+      }
+    }
+    if (unit_col %in% names(df)) {
+      unit_raw <- as.character(df[[unit_col]])
+      fill_idx <- which(is.na(out) | !nzchar(out))
+      if (length(fill_idx) > 0) {
+        out[fill_idx] <- unit_raw[fill_idx]
+      }
+    }
+    out
+  }
+
   all_years <- collect_window_years(windows_df)
   if (length(all_years) == 0) {
     stop("No years available in rolling windows for RMSE cache")
@@ -630,18 +651,39 @@ build_fire_outcome_cache <- function(weights_df,
 
   if (!('unit' %in% names(weights_df))) {
     if ('LATITUDE' %in% names(weights_df) && 'LONGITUDE' %in% names(weights_df)) {
-      weights_df$unit <- build_unit_key(weights_df$LATITUDE, weights_df$LONGITUDE)
+      weights_df$unit <- paste0(as.character(weights_df$LATITUDE), as.character(weights_df$LONGITUDE))
     } else {
       stop("weights_df must contain unit or LATITUDE/LONGITUDE columns")
     }
   }
+  weights_df$unit_match <- make_match_key(weights_df, unit_col = "unit")
 
-  fire_base$unit <- build_unit_key(fire_base$LATITUDE, fire_base$LONGITUDE)
+  if (!('unit' %in% names(fire_base))) {
+    if (!('LATITUDE' %in% names(fire_base) && 'LONGITUDE' %in% names(fire_base))) {
+      stop("FIRMS data must contain either unit or LATITUDE/LONGITUDE columns")
+    }
+    fire_base$unit <- paste0(as.character(fire_base$LATITUDE), as.character(fire_base$LONGITUDE))
+  } else {
+    fire_base$unit <- as.character(fire_base$unit)
+    missing_unit <- is.na(fire_base$unit) | !nzchar(fire_base$unit)
+    if (any(missing_unit)) {
+      if (!('LATITUDE' %in% names(fire_base) && 'LONGITUDE' %in% names(fire_base))) {
+        stop("FIRMS data has missing unit values and lacks LATITUDE/LONGITUDE fallback")
+      }
+      fire_base$unit[missing_unit] <- paste0(
+        as.character(fire_base$LATITUDE[missing_unit]),
+        as.character(fire_base$LONGITUDE[missing_unit])
+      )
+    }
+  }
+  fire_base$unit_match <- make_match_key(fire_base, unit_col = "unit")
   fire_base$has.hifire95 <- 0L
   fire_base$has.hifire95[!is.na(fire_base$max_FRP) & fire_base$max_FRP >= 1000] <- 1L
 
-  treated_units <- unique(weights_df$unit[weights_df$treated == 1])
-  control_units <- unique(weights_df$unit[weights_df$treated == 0])
+  treated_units <- unique(weights_df$unit_match[weights_df$treated == 1])
+  control_units <- unique(weights_df$unit_match[weights_df$treated == 0])
+  treated_units <- treated_units[!is.na(treated_units) & nzchar(treated_units)]
+  control_units <- control_units[!is.na(control_units) & nzchar(control_units)]
 
   overlap_units <- intersect(treated_units, control_units)
   if (length(overlap_units) > 0) {
@@ -653,28 +695,39 @@ build_fire_outcome_cache <- function(weights_df,
     treated_panel <- expand.grid(year = all_years, unit = treated_units, stringsAsFactors = FALSE)
 
     treated_obs <- fire_base[
-      fire_base$unit %in% treated_units & fire_base$year %in% all_years,
-      c("year", "unit", "has.hifire95"),
+      fire_base$unit_match %in% treated_units & fire_base$year %in% all_years,
+      c("year", "unit_match", "has.hifire95"),
       drop = FALSE
     ]
+    names(treated_obs)[names(treated_obs) == "unit_match"] <- "unit"
     treated_panel <- merge(treated_panel, treated_obs, by = c("year", "unit"), all.x = TRUE, sort = FALSE)
     treated_panel$has.hifire95[is.na(treated_panel$has.hifire95)] <- 0
 
     control_obs <- fire_base[
-      fire_base$unit %in% control_units & fire_base$year %in% all_years,
-      c("year", "unit", "has.hifire95"),
+      fire_base$unit_match %in% control_units & fire_base$year %in% all_years,
+      c("year", "unit_match", "has.hifire95"),
       drop = FALSE
     ]
+    names(control_obs)[names(control_obs) == "unit_match"] <- "unit"
+    control_obs <- control_obs[!is.na(control_obs$year) & !is.na(control_obs$unit), , drop = FALSE]
     if (nrow(control_obs) == 0) {
       synth <- data.frame(year = all_years, synth_hifire95 = NA_real_, stringsAsFactors = FALSE)
     } else {
-      control_w <- weights_df[weights_df$unit %in% control_units, c("unit", "weight"), drop = FALSE]
+      control_w <- weights_df[weights_df$unit_match %in% control_units, c("unit_match", "weight"), drop = FALSE]
+      names(control_w)[names(control_w) == "unit_match"] <- "unit"
       control_obs <- merge(control_obs, control_w, by = "unit", all.x = TRUE, sort = FALSE)
       control_obs$weight_hifire95 <- control_obs$weight * control_obs$has.hifire95
 
-      synth <- aggregate(cbind(weight_hifire95, weight) ~ year, data = control_obs, FUN = sum, na.rm = TRUE)
-      synth$synth_hifire95 <- ifelse(synth$weight > 0, synth$weight_hifire95 / synth$weight, NA_real_)
-      synth <- synth[, c("year", "synth_hifire95"), drop = FALSE]
+      synth <- tryCatch(
+        aggregate(cbind(weight_hifire95, weight) ~ year, data = control_obs, FUN = sum, na.rm = TRUE),
+        error = function(e) data.frame(year = integer(0), weight_hifire95 = numeric(0), weight = numeric(0))
+      )
+      if (nrow(synth) == 0) {
+        synth <- data.frame(year = all_years, synth_hifire95 = NA_real_, stringsAsFactors = FALSE)
+      } else {
+        synth$synth_hifire95 <- ifelse(synth$weight > 0, synth$weight_hifire95 / synth$weight, NA_real_)
+        synth <- synth[, c("year", "synth_hifire95"), drop = FALSE]
+      }
     }
 
     treated_panel <- merge(treated_panel, synth, by = "year", all.x = TRUE, sort = FALSE)
@@ -710,15 +763,22 @@ compute_window_rmse_from_cache <- function(rmse_cache, train_start, train_end, t
     }
 
     sub <- rmse_cache$treated_panel[rmse_cache$treated_panel$year %in% years_vec, c("unit", "sq_err"), drop = FALSE]
+    sub <- sub[!is.na(sub$unit), , drop = FALSE]
     if (nrow(sub) == 0) {
       return(list(median = NA_real_, p90 = NA_real_, maxv = NA_real_))
     }
 
-    rmse_i <- aggregate(
-      sq_err ~ unit,
-      data = sub,
-      FUN = function(x) if (all(is.na(x))) NA_real_ else sqrt(mean(x, na.rm = TRUE))
+    rmse_i <- tryCatch(
+      aggregate(
+        sq_err ~ unit,
+        data = sub,
+        FUN = function(x) if (all(is.na(x))) NA_real_ else sqrt(mean(x, na.rm = TRUE))
+      ),
+      error = function(e) data.frame(unit = character(0), sq_err = numeric(0), stringsAsFactors = FALSE)
     )
+    if (nrow(rmse_i) == 0) {
+      return(list(median = NA_real_, p90 = NA_real_, maxv = NA_real_))
+    }
     vals <- rmse_i$sq_err[is.finite(rmse_i$sq_err)]
     if (length(vals) == 0) {
       return(list(median = NA_real_, p90 = NA_real_, maxv = NA_real_))

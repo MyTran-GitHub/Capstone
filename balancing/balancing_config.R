@@ -21,12 +21,16 @@ get_diagnostics_config <- function(overrides = list()) {
         top10_share = 0.70,
         max_weight = 0.10,
         ess_frac = 0.02,
-        ess_mult_treated = 1.5
+        ess_mult_treated = 1.2
       ),
+      # Soft anti-boundary rule: if feasible candidates exist above this
+      # multiplier of the required ESS floor, prefer that subset for ranking.
+      # This reduces floor-hugging without turning feasible years infeasible.
+      ess_soft_floor_mult = 1.10,
       # Explicit, pre-specified fallback gates for difficult years.
       fallback_gates = list(
-        list(name = "relax_ess", max_smd = 0.12, median_smd = 0.05, top10_share = 0.70, max_weight = 0.10, ess_frac = 0.01, ess_mult_treated = 1.2),
-        list(name = "relax_concentration_and_ess", max_smd = 0.15, median_smd = 0.05, top10_share = 0.75, max_weight = 0.10, ess_frac = 0.01, ess_mult_treated = 1.2)
+        list(name = "relax_ess", max_smd = 0.12, median_smd = 0.05, top10_share = 0.70, max_weight = 0.10, ess_frac = 0.01, ess_mult_treated = 1.1),
+        list(name = "relax_concentration_and_ess", max_smd = 0.15, median_smd = 0.05, top10_share = 0.75, max_weight = 0.10, ess_frac = 0.01, ess_mult_treated = 1.1)
       ),
       emergency_selection = list(
         enabled = TRUE,

@@ -7,7 +7,7 @@ Usage:
   python Embeddings/scripts/compute_similarities.py --year 2019
 
 Outputs:
-  Embeddings/data/k_selection/{year}/similarities_cache_{year}.npy
+    Embeddings/data/embeddings/similarities_cache_{year}.npy
 """
 import argparse
 from pathlib import Path
@@ -18,7 +18,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from Embeddings.scripts.utils._similarity_utils import compute_all_similarities
-from config import K_SELECTION_DIR
+from config import OUTPUT_EMBEDDINGS_DIR
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def main(argv=None):
         return 2
 
     # Compute similarities
-    out_dir = Path(K_SELECTION_DIR) / str(year)
+    out_dir = Path(OUTPUT_EMBEDDINGS_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f'similarities_cache_{year}.npy'
     if out_file.exists() and not args.force:

@@ -17,6 +17,8 @@ REQUIRED_BASENAMES = [
     "pool_size_grid.csv",
     "embedding_k_raw_results.csv",
     "embedding_pool_frontier.csv",
+    "embedding_k_pool_metrics_unified.csv",
+    "embedding_distance_fit_diagnostics.csv",
     "random_pool_summary.csv",
     "pool_overlap_diagnostics.csv",
     "similarity_support.csv",
@@ -38,6 +40,8 @@ def _expected_files(base_dir: Path, year: int, output_tag: str) -> List[Path]:
         year_dir / "pool_size_grid.csv",
         year_dir / "embedding_k_raw_results.csv",
         year_dir / "embedding_pool_frontier.csv",
+        year_dir / "embedding_k_pool_metrics_unified.csv",
+        year_dir / "embedding_distance_fit_diagnostics.csv",
         year_dir / "random_pool_summary.csv",
         year_dir / "pool_overlap_diagnostics.csv",
         year_dir / "similarity_support.csv",
@@ -53,13 +57,6 @@ def main() -> int:
     parser.add_argument("--output-tag", type=str, default="smoke", help="Output tag suffix (default: smoke)")
     parser.add_argument("--max-workers", type=int, default=2, help="Max CBPS workers (default: 2)")
     parser.add_argument("--min-ratio", type=int, default=2, help="Minimum control:treated ratio for smoke test (default: 2)")
-    parser.add_argument(
-        "--k-values",
-        type=int,
-        nargs="+",
-        default=[10, 30, 60],
-        help="Fallback K seed values if target proportions are omitted",
-    )
     parser.add_argument("--force-recompute", action="store_true", help="Ignore cache and recompute")
     args = parser.parse_args()
 
@@ -79,15 +76,11 @@ def main() -> int:
         str(max(1, int(args.max_workers))),
         "--min-ratio",
         str(max(1, int(args.min_ratio))),
-        "--no-adaptive-refine",
         "--placebo-draws",
         "10",
         "--temporal-placebo-draws",
         "10",
     ]
-
-    if args.k_values:
-        cmd.extend(["--k-values", *[str(int(k)) for k in args.k_values]])
     if args.force_recompute:
         cmd.append("--force-recompute")
 

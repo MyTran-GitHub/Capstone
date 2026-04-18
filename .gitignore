@@ -1,3 +1,28 @@
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data
+/data/raw_data/*
+/data/processed_data/*
+/data/outputs/*
+!data/raw_data/README.md
+
+# Environment
+.env/
+.venv/
+/env/
+
+# Misc
 .DS_Store
-/data/processed_data/
-/data/raw_data/
+*.swp
+
+# VSCode
+.vscode/

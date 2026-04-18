@@ -23,6 +23,7 @@ import time
 import glob
 import shutil
 import argparse
+import logging
 
 # Configuration
 OUTPUT_BASE_DIR = Path("embedding_images")
@@ -57,58 +58,44 @@ def extract_filename_and_year(url):
 
 def download_file(url, output_path, retries=MAX_RETRIES):
     """Download a file with progress tracking and retry logic."""
-    
     for attempt in range(retries):
         try:
-            print(f"\n[{attempt + 1}/{retries}] Downloading to: {output_path}")
-            
-            # Stream the download
+            logging.info(f"[{attempt + 1}/{retries}] Downloading to: {output_path}")
             response = requests.get(url, stream=True, timeout=TIMEOUT)
             response.raise_for_status()
-            
-            # Get file size if available
             total_size = int(response.headers.get('content-length', 0))
-            
-            # Download with progress
             downloaded = 0
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            
             with open(output_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        
-                        # Show progress every MB
                         if downloaded % (1024 * 1024) == 0 or downloaded == total_size:
                             if total_size > 0:
                                 pct = (downloaded / total_size) * 100
                                 mb_down = downloaded / (1024 * 1024)
                                 mb_total = total_size / (1024 * 1024)
-                                print(f"  Progress: {mb_down:.1f}/{mb_total:.1f} MB ({pct:.1f}%)", end='\r')
-            
-            # Verify file was created
+                                logging.info(f"  Progress: {mb_down:.1f}/{mb_total:.1f} MB ({pct:.1f}%)")
             if output_path.exists():
                 file_size = output_path.stat().st_size
-                print(f"\n✓ Success: {output_path.name} ({file_size / (1024*1024):.1f} MB)")
+                logging.info(f"Success: {output_path.name} ({file_size / (1024*1024):.1f} MB)")
                 return True
             else:
-                print(f"\n✗ Error: File not created")
+                logging.error(f"Error: File not created")
                 return False
-                
         except requests.exceptions.RequestException as e:
-            print(f"\n✗ Attempt {attempt + 1} failed: {e}")
+            logging.warning(f"Attempt {attempt + 1} failed: {e}")
             if attempt < retries - 1:
-                wait_time = 2 ** attempt  # Exponential backoff
-                print(f"  Retrying in {wait_time} seconds...")
+                wait_time = 2 ** attempt
+                logging.info(f"Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
-                print(f"  Max retries reached. Skipping this file.")
+                logging.error(f"Max retries reached. Skipping this file.")
                 return False
         except Exception as e:
-            print(f"\n✗ Unexpected error: {e}")
+            logging.error(f"Unexpected error: {e}")
             return False
-    
     return False
 
 
@@ -150,27 +137,28 @@ def main():
     parser.add_argument("--urls-dir", type=Path, required=True)
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+
     year = args.year
     urls_dir = args.urls_dir
 
     urls = read_urls_for_year(urls_dir, year)
 
-    print(f"Found {len(urls)} URLs for year {year}")
-    print("=" * 80)
+    logging.info(f"Found {len(urls)} URLs for year {year}")
+    logging.info("=" * 80)
 
     success_count = 0
     failed_urls = []
 
     for i, url in enumerate(urls, 1):
-        print(f"\n[{i}/{len(urls)}] Processing URL...")
-
+        logging.info(f"[{i}/{len(urls)}] Processing URL...")
         try:
             filename, _ = extract_filename_and_year(url)
             output_dir = OUTPUT_BASE_DIR / str(year)
             output_path = output_dir / filename
 
             if output_path.exists():
-                print(f"⊙ Already exists: {output_path}")
+                logging.info(f"Already exists: {output_path}")
                 success_count += 1
                 continue
 
@@ -180,15 +168,16 @@ def main():
                 failed_urls.append(url)
 
         except Exception as e:
-            print(f"✗ Error processing URL: {e}")
+            logging.error(f"Error processing URL: {e}")
             failed_urls.append(url)
 
-    print("\nDownload Summary")
-    print(f"Successful: {success_count}/{len(urls)}")
+    logging.info("\nDownload Summary")
+    logging.info(f"Successful: {success_count}/{len(urls)}")
 
     if failed_urls:
-        print("Failed downloads:")
+        logging.warning("Failed downloads:")
         for u in failed_urls:
-            print(u)
+            logging.warning(u)
+
 if __name__ == "__main__":
     main()

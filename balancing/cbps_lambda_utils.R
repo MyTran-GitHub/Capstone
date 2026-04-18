@@ -1,3 +1,6 @@
+#' Utility helpers for CBPS lambda grid search and diagnostics
+#'
+#' This script provides functions for lambda grid construction, gate evaluation, and diagnostics in CBPS workflows.
 # Utility helpers for cbps lambda grid search and diagnostics
 source("balancing/balancing_config.R")
 get_diagnostics_config <- get("get_diagnostics_config", mode = "function")
@@ -234,6 +237,26 @@ run_lambda_selection <- function(results_df, n_ctrl, n_treated = NA_real_) {
 
     selection_log$n_feasible_by_tier[[as.character(gate$name)]] <- nrow(feasible)
     if (nrow(feasible) == 0) next
+
+    # Soft anti-boundary filter: when possible, avoid selecting lambdas whose
+    # ESS sits right on the hard floor. Keep feasibility by falling back to
+    # the full feasible set if this filter would drop everything.
+    soft_floor_mult <- ifelse(is.null(lambda_cfg$ess_soft_floor_mult), 1.0, as.numeric(lambda_cfg$ess_soft_floor_mult))
+    if (is.finite(soft_floor_mult) && soft_floor_mult > 1 && is.finite(gate_ess_required) && gate_ess_required > 0) {
+      soft_floor <- soft_floor_mult * gate_ess_required
+      feasible_soft <- feasible[!is.na(feasible$ess) & feasible$ess >= soft_floor, , drop = FALSE]
+      if (nrow(feasible_soft) > 0) {
+        feasible <- feasible_soft
+        selection_log$warnings <- c(
+          selection_log$warnings,
+          paste0(
+            "Applied ESS soft-floor filter in ", as.character(gate$name),
+            ": ess >= ", round(soft_floor, 2),
+            " (", round(soft_floor_mult, 2), "x required floor)."
+          )
+        )
+      }
+    }
 
     use_plateau <- !identical(as.character(gate$name), "hard")
     if (use_plateau) {

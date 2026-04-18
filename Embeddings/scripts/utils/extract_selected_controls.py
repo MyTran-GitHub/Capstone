@@ -27,8 +27,8 @@ def main():
     logger.info(f"Extracting selected controls for year {year}")
     
     # Load cached similarities
-    from config import K_SELECTION_DIR, CBPS_INTEGRATION_DIR
-    similarities_cache = K_SELECTION_DIR / str(year) / f"similarities_cache_{year}.npy"
+    from config import OUTPUT_EMBEDDINGS_DIR, CBPS_INTEGRATION_DIR
+    similarities_cache = OUTPUT_EMBEDDINGS_DIR / f"similarities_cache_{year}.npy"
     
     if not similarities_cache.exists():
         logger.error(f"Similarity cache not found: {similarities_cache}")

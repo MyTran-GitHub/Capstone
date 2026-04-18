@@ -1,3 +1,6 @@
+#' Cohort-pooled estimator for fire regression lag analysis
+#'
+#' This script computes pooled estimates for fire outcomes across cohorts and lags, using robust data loading and aggregation.
 # Ensure required packages are installed
 required_packages <- c("grid", "pBrackets", "gridExtra", "Hmisc", "ggplot2")
 for (pkg in required_packages) {

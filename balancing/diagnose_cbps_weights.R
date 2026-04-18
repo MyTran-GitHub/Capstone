@@ -1,3 +1,8 @@
+#' Comprehensive CBPS Weight Diagnostics
+#'
+#' Purpose: Identify why embedding-selected controls produce NaN/Inf weights when baseline (full pool) produces valid weights.
+#' Usage: Rscript diagnose_cbps_weights.R <year> [selected_units_csv]
+#' Outputs: Covariate balance comparison, separation/extreme value detection, propensity diagnostics, and sample size checks.
 #!/usr/bin/env Rscript
 ## Comprehensive CBPS Weight Diagnostics
 ## 

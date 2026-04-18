@@ -1,6 +1,7 @@
 import subprocess
 import shutil
 from pathlib import Path
+import logging
 
 START_YEAR = 2008
 END_YEAR = 2018
@@ -13,24 +14,24 @@ EXTRACT_SCRIPT = "02_extract_embeddings_single_year.py"
 
 
 def run_command(cmd):
-    print(f"\nRunning: {' '.join(cmd)}")
+    logging.info(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        raise RuntimeError("Command failed")
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
 
 
 def delete_year_folder(year):
     year_path = EMBEDDING_DIR / str(year)
     if year_path.exists():
-        print(f"Deleting tiles for {year} to free storage...")
+        logging.info(f"Deleting tiles for {year} to free storage...")
         shutil.rmtree(year_path)
 
 
 def main():
     for year in range(START_YEAR, END_YEAR + 1):
-        print("\n" + "=" * 100)
-        print(f"PROCESSING YEAR {year}")
-        print("=" * 100)
+        logging.info("\n" + "=" * 100)
+        logging.info(f"PROCESSING YEAR {year}")
+        logging.info("=" * 100)
 
         # 1️⃣ Download
         run_command([
@@ -50,10 +51,11 @@ def main():
         # 3️⃣ Delete tiles
         delete_year_folder(year)
 
-        print(f"Year {year} complete.\n")
+        logging.info(f"Year {year} complete.\n")
 
-    print("ALL YEARS COMPLETE.")
+    logging.info("ALL YEARS COMPLETE.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     main()

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 
 def _pool_col(df: pd.DataFrame) -> str:
@@ -40,8 +41,24 @@ def main() -> int:
         rnd = pd.read_csv(rnd_fp)
         rnd_x = _pool_col(rnd)
         rnd = rnd.sort_values(rnd_x)
+        # plot full random trajectory if present
         if "median_ess_control" in rnd.columns and rnd["median_ess_control"].notna().any():
             ax.plot(rnd[rnd_x], rnd["median_ess_control"], marker="s", linestyle="--", linewidth=1.7, label="random pools")
+
+    # Overlay random-selected-K single point (from diagnostics CSV) if available
+    repo_root = Path(__file__).resolve().parent.parent.parent.parent
+    diag_fp = repo_root / "diagnostics" / "k_selection_synthesis" / "emb_vs_full_comparison.csv"
+    if diag_fp.exists():
+        try:
+            diag = pd.read_csv(diag_fp)
+            row = diag[diag["year"] == args.year]
+            if not row.empty and "random_ess" in row.columns:
+                rnd_ess = row.iloc[0]["random_ess"]
+                emb_eff = row.iloc[0].get("emb_effective_pool_size", None)
+                if pd.notna(rnd_ess) and emb_eff is not None and not pd.isna(emb_eff):
+                    ax.scatter([emb_eff], [rnd_ess], marker="X", color="tab:gray", s=90, zorder=5, label="random (selected K)")
+        except Exception:
+            pass
 
     ax.set_xlabel("effective_pool_size")
     ax.set_ylabel("ESS_control")

@@ -1,3 +1,6 @@
+#' Synthetic control regions and fire risk analysis
+#'
+#' This script creates synthetic control regions using covariate balance weights and calculates relative fire risks by land type and lag.
 ## create synthetic control regions using covariate balance weights
 ## calculate the relative risks of fire frequencies between exposed region and synthetic control region
 ## by land types and year lags

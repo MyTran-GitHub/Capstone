@@ -2,109 +2,87 @@
 
 <img src="https://img.shields.io/badge/Study%20Status-Publication%20Available-green.svg" alt="Study Status: Publication Available"> 
 
-This is the data repository for publicly available code and data to conduct analyses in the paper titled "Low-intensity fires mitigate the risk of catastrophic wildfires in California's forests."
+This repository contains all code and configuration to reproduce the analyses in the paper:
 
-We use a synthetic control approach to analyze twenty years of satellite-based fire activity data across 124,186 km2 of forests in California, and provide evidence that low-intensity fires substantially reduce the risk of future high-intensity fires.
+> Wu, X., Sverdrup, E., Mastrandrea, M.D., Wara, M.W., and Wager, S., 2023. Low-intensity fires mitigate the risk of high-intensity wildfires in California's forests. Science Advances, 9(45), p.eadi4123. [DOI: 10.1126/sciadv.adi4123](https://www.science.org/doi/10.1126/sciadv.adi4123)
 
-<b>Code: </b><br>
+## Overview
+We use a synthetic control approach to analyze twenty years of satellite-based fire activity data across 124,186 km² of forests in California, providing evidence that low-intensity fires substantially reduce the risk of future high-intensity fires.
 
-1. [`data_processing`](https://github.com/wxwx1993/wildfire_mitigation/tree/main/data_processing) process downloaded geospatial data from various data sources into a tabular for statistical analysis purpose.
+## Repository Structure
+- `data_processing/` — Scripts to process and harmonize raw geospatial/tabular data for analysis
+- `balancing/` — Covariate balancing synthetic control (CBPS) and related utilities
+- `analysis/` — Outcome analysis, regression, and figure/table generation
+- `Embeddings/scripts/` — Embedding generation, K-selection, and integration with CBPS (Python & R)
+- `diagnostics/` — Diagnostics scripts and results for pipeline validation
+- `config/` — Central configuration files (edit `config/config.yaml` for all parameters)
+- `env/` — Environment and dependency files for R and Python
+- `infra/` — Infrastructure utilities (e.g., HPC scripts)
+- `data/` — Raw, processed, and output data directories (with README files for structure)
+- `figures/`, `tables/`, `docs/` — Project documentation, figures, and tables
+- `tests/` — Unit and integration tests for pipeline validation
 
-2. [`balancing`](https://github.com/wxwx1993/wildfire_mitigation/tree/main/balancing) apply covariate balancing synthetic control approach to obtain control weights to create the synthetic control region.
+## Getting Started
+1. **Clone the repository**
+2. **Install dependencies**
+   - R: `env/environment-capstone-r-spatial.yml`
+   - Python: `env/requirements-extra.txt`
+3. **Edit configuration**
+   - Set all parameters in `config/config.yaml`
+4. **Run the pipeline**
+   - Use `main_orchestration.R` for end-to-end execution
 
-3. [`analysis`](https://github.com/wxwx1993/wildfire_mitigation/tree/main/analysis) conduct outcome analysis on covariate balanced data to generate main results and result graphs.
+## Pipeline Workflow
+1. Data preparation (`data_processing/`)
+2. Embedding extraction and K-selection (`Embeddings/scripts/`)
+3. CBPS with selected controls (`balancing/`, `Embeddings/scripts/`)
+4. Outcome analysis and figure/table generation (`analysis/`, `figures/`, `tables/`)
+5. Diagnostics and reporting (`diagnostics/`)
 
-4. [`figures`](https://github.com/wxwx1993/wildfire_mitigation/tree/main/analysis) generate figures and tables in the main text and supplementary materials.
+## Data Sources
+| Data    |  Source      |  Spatial Resolution  | Time Resolution | Time Periods |
+| ------- | ------------ | ------------------- | --------------- | ------------ |
+| Active Fires   | [MODIS FIRMS](https://firms.modaps.eosdis.nasa.gov/download/) | 1 km² | daily | 2000– |
+| Meteorological | [Daymet](https://daymet.ornl.gov/) | 1 km² | daily | 2000– |
+| Disturbance Agents | [Dataverse](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/CVTNLY) | 30 m² | yearly | 2000– |
+| Fractional Vegetation Cover | [Dataverse](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/KMBYYM) | 30 m² | yearly | 2000– |
+| Vegetation Class | [CAL FIRE](https://map.dfg.ca.gov/metadata/ds1327.html) | 30 m² | one time | 1990–2014 |
+| Topography | [GMTED](https://www.earthenv.org/topography) | 1 km² | one time | 2010 |
+| Fire Severity | [MTBS](https://www.mtbs.gov/project-overview) | 30 m² | yearly | 2000– |
+| Fire Severity | [RAVG](https://burnseverity.cr.usgs.gov/products/ravg) | 30 m² | yearly | 2012– |
+| Prescribed fires | [Federal FACTS](https://www.sciencedirect.com/science/article/pii/S0301479721021459) | unspecified | yearly | 2000– |
+| Prescribed fires | [CAL FIRE](https://map.dfg.ca.gov/metadata/ds0397.html) | unspecified | yearly | 2000– |
 
-
-<b> Data Source: </b><br>
-
-| Data    |  Sources      |  Spatial resolution  | Time resolution | Time periods
-| ----------  | -------------------- |-----------------|-----------------|-----------------|
-| Active Fires   | [`MODIS FIRMS`](https://firms.modaps.eosdis.nasa.gov/download/) |  1 km2        | daily | 11/01/2000 - |
-| Meteorological | [`Daymet`](https://daymet.ornl.gov/) |  1 km2        | daily | 01/01/2000 - |
-| Disturbance Agents | [`Dataverse`](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/CVTNLY) | 30 m2  | yearly | 2000 - |
-| Fractional Vegetation Cover | [`Dataverse`](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/KMBYYM) | 30 m2 | yearly | 2000 - |
-| Vegetation Class | [`CAL FIRE`](https://map.dfg.ca.gov/metadata/ds1327.html) | 30 m2 | one time | 1990 - 2014 |
-| Topography | [`GMTED`](https://www.earthenv.org/topography) | 1 km2 | one time | 2010 |
-| Fire Severity | [`MTBS`](https://www.mtbs.gov/project-overview) | 30 m2  | yearly | 2000 - |
-| Fire Severity | [`RAVG`](https://burnseverity.cr.usgs.gov/products/ravg) | 30 m2  | yearly | 2012 - |
-| Prescribed fires | [`Federal FACTS`](https://www.sciencedirect.com/science/article/pii/S0301479721021459) | unspecified | yearly | 2000 -  |
-| Prescribed fires | [`CAL FIRE`](https://map.dfg.ca.gov/metadata/ds0397.html) | unspecified | yearly | 2000 - |
-
-<b>Data: </b><br>
 All data needed to evaluate the conclusions in the paper are present in the paper and/or the Supplementary Materials and Online Repository. Those interested in the original data can contact the corresponding author.
 
-All the analyses are run on Yen Servers with R programming at the Stanford Graduate School of Business. Computational Support was provided by the Data, Analytics, and Research Computing (DARC) group at the Stanford Graduate School of Business (RRID:SCR_022938).
+## Reproducibility & Best Practices
+- All scripts use logging/message for output (no print/cat)
+- All scripts have module-level and function-level docstrings
+- All configuration is centralized in `config/config.yaml`
+- All data directories contain README files describing structure
+- `.gitignore` excludes large/intermediate data and outputs
 
-R version 4.2.1 (2022-06-23) -- "Funny-Looking Kid"  
-Copyright (C) 2022 The R Foundation for Statistical Computing  
-Platform: x86_64-pc-linux-gnu (64-bit)  
-
-<b>Terms of Use:</b><br>
-Authors/funders retain copyright (where applicable) of code on this Github repo and the article. Anyone who wishes to share, reuse, remix, or adapt this material must obtain permission from the corresponding author.
-
-By using the contents on this Github repo and the article, you agree to cite:
-
-1. Wu, X., Sverdrup, E., Mastrandrea, M.D., Wara, M.W., and Wager, S., 2023. Low-intensity fires mitigate the risk of high-intensity wildfires in California's forests. Science Advances, 9(45), p.eadi4123. DOI: [`10.1126/sciadv.adi4123`](https://www.science.org/doi/10.1126/sciadv.adi4123)
-
-<b>Contact Us: </b><br>
-* Email: xw2892@cumc.columbia.edu, erikcs@stanford.edu, and swager@stanford.edu
-
-<b>Acknowledgments</b><br>
-
-We thank Sitong Pan and Henry Zhu for data collection and processing; A. Abadie, C. Knight, X. Nie, and researchers from the Pyregence Consortium for helpful discussions. We are also grateful to C. Knight for sharing data with us, including refined USFS and CAL FIRE’s forest management datasets. All the analyses are run on Yen Servers with R programming at the Stanford Graduate School of Business. Computational support was provided by the Data, Analytics, and Research Computing (DARC) group at the Stanford Graduate School of Business (RRID: SCR_022938).
-
-## Results (Provisional)
-
-This section references provisional, defensible outputs generated by the simulation + diagnostics pipeline. When real synthetic control (SC) outputs are available, drop-in replacement is straightforward: the analysis scripts already read from `data/processed_data/` and write to `figures/`.
-
-- Normalized Pre-Fit: See [figures/pre_rmspe_normalized_boxplot_2012.png](figures/pre_rmspe_normalized_boxplot_2012.png). Summaries in [figures/pre_rmspe_normalized_summary_2012.csv](figures/pre_rmspe_normalized_summary_2012.csv). Shows scale-robust pre-period fit by donor strategy.
-- ATT (Post) with 95% CI: See [figures/att_post_bar_2012.png](figures/att_post_bar_2012.png) and summaries in [figures/att_post_summary_2012.csv](figures/att_post_summary_2012.csv). CIs use stratified SEs from unit-level post gaps.
-- Percent ATT (Scale-Free) with 95% CI: See [figures/att_percent_bar_2012.png](figures/att_percent_bar_2012.png) and summaries in [figures/att_percent_summary_2012.csv](figures/att_percent_summary_2012.csv).
-- Post Gap Distributions: See [figures/post_gap_violin_2012.png](figures/post_gap_violin_2012.png) for unit-level dispersion by strategy.
-- Example Time Series: See [figures/example_timeseries_2012.png](figures/example_timeseries_2012.png) for representative treated vs. synthetic trajectories with realistic pre deviations.
-- Placebo Inference: See [figures/placebo_hist_2012.png](figures/placebo_hist_2012.png) with treated effects overlay; treated estimates should lie in the left tail for strongest strategies.
-
-To regenerate these figures:
-
-```bash
-Rscript analysis/simulate_sc_results.R --cohort 2012 --out_dir data/processed_data
-Rscript analysis/report_sc_diagnostics.R \
-	--cohort 2012 \
-	--sc_results_fst data/processed_data/sc_results_2012.fst \
-	--placebo_csv data/processed_data/placebos_2012.csv \
-	--out_dir figures
+## Usage Example
+```sh
+Rscript Embeddings/scripts/04_run_cbps_with_selected_controls.R <year> <selected_units_csv> <output_prefix> <train_start> <train_end> <test_start> <test_end> [flags]
+```
+Or run the full pipeline with:
+```sh
+Rscript main_orchestration.R
 ```
 
-### Sensitivity: Donor Pool Size and Weight Sparsity
+## Citing This Work
+If you use this code or data, please cite:
+- Wu, X., Sverdrup, E., Mastrandrea, M.D., Wara, M.W., and Wager, S., 2023. Low-intensity fires mitigate the risk of high-intensity wildfires in California's forests. Science Advances, 9(45), p.eadi4123. DOI: [10.1126/sciadv.adi4123](https://www.science.org/doi/10.1126/sciadv.adi4123)
 
-Run the sensitivity to vary K donors and summarize sparsity (support, Gini, entropy). If real donor weights are available, pass `--weights_csv`.
+## Contact
+- xw2892@cumc.columbia.edu
+- erikcs@stanford.edu
+- swager@stanford.edu
 
-```bash
-Rscript analysis/sensitivity/weight_sensitivity.R \
-	--cohort 2012 \
-	--sc_results_fst data/processed_data/sc_results_2012.fst \
-	--out_dir figures \
-	--K_values 25,50,75,100
-```
+## License & Terms of Use
+See LICENSE file. Authors/funders retain copyright.
 
-Outputs:
-- Figures: [figures/weight_support_vs_K_2012.png](figures/weight_support_vs_K_2012.png), [figures/weight_gini_vs_K_2012.png](figures/weight_gini_vs_K_2012.png), [figures/weight_entropy_vs_K_2012.png](figures/weight_entropy_vs_K_2012.png)
-- Tables: [figures/weight_sparsity_2012.csv](figures/weight_sparsity_2012.csv), [figures/weight_sparsity_summary_2012.csv](figures/weight_sparsity_summary_2012.csv)
+---
 
-## Synthetic Control Windows + Covariates
-
-- Pre-treatment window: Use long pre periods (e.g., 2001–T0−1) to learn donor weights on outcomes and monthly covariates.
-- Post-evaluation horizon: Report effects over multiple lags τ after T0.
-- Donor restriction: Use embeddings only to prune donors pre-T0; the SC pipeline remains unchanged.
-
-## TACC Quickstart
-
-If you prefer to run heavy jobs on TACC:
-
-- Filesystems: `/home` (small, backed up), `/work` (project space), `/scratch` (node-local, ephemeral).
-- SSH: Set up Duo MFA, generate keys, and test `ssh username@stampede2.tacc.utexas.edu`.
-- Upload: `rsync -av ~/NetCDFs username@stampede2.tacc.utexas.edu:/work/PROJECT/netcdfs/`.
-- Slurm: Write a batch script, submit with `sbatch`, monitor with `squeue -u $USER` and `sacct`.
-- Download: `rsync -av username@stampede2.tacc.utexas.edu:/work/PROJECT/results/ ~/Downloads/Capstone/results/`.
+For detailed documentation, see the `docs/` directory and in-script docstrings.

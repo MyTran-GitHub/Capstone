@@ -5,7 +5,7 @@ Select control pools by K from embedding similarity cache and optionally run CBP
 Usage:
   python Embeddings/scripts/select_controls.py --year 2019 --k-values 20 50 100 --run-cbps
 
-This script expects a similarity cache at Embeddings/data/k_selection/{year}/similarities_cache_{year}.npy
+This script expects a similarity cache at Embeddings/data/embeddings/similarities_cache_{year}.npy
 and an embeddings CSV at Embeddings/data/embeddings/embeddings_{year}.csv
 """
 
@@ -90,7 +90,7 @@ def main(argv=None):
     year = args.year
     # determine default paths
     base_dir = Path('Embeddings')
-    default_cache = base_dir / 'data' / 'k_selection' / str(year) / f'similarities_cache_{year}.npy'
+    default_cache = base_dir / 'data' / 'embeddings' / f'similarities_cache_{year}.npy'
     cache_path = Path(args.similarity_cache) if args.similarity_cache else default_cache
     default_embeddings = base_dir / 'data' / 'embeddings' / f'embeddings_{year}.csv'
     embeddings_path = Path(args.embeddings_file) if args.embeddings_file else default_embeddings

@@ -1,3 +1,6 @@
+#' MTBS fire severity extraction and conifer masking
+#'
+#' This script extracts MTBS fire severity rasters, masks to conifer grid, and summarizes by year for analysis.
 library(sf)   
 library(dplyr)
 library(raster)

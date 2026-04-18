@@ -12,6 +12,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 
 
+def _numeric_col_or_nan(df: pd.DataFrame, col: str) -> pd.Series:
+    """Return numeric Series for an existing column, else aligned NaN Series."""
+    if col in df.columns:
+        return pd.to_numeric(df[col], errors='coerce')
+    return pd.Series(np.nan, index=df.index, dtype='float64')
+
+
 def _write_csv_atomic(df: pd.DataFrame, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, dir=out_path.parent, encoding='utf-8') as tmp:
@@ -107,6 +114,47 @@ def _write_pool_frontier_plots(output_dir: Path,
     return plots
 
 
+def _build_distance_fit_diagnostics(frontier_df: pd.DataFrame) -> pd.DataFrame:
+    """Construct a compact plot-ready table for embedding distance validation figures."""
+    if frontier_df is None or frontier_df.empty:
+        return pd.DataFrame()
+
+    d = frontier_df.copy()
+    for col in ['support_similarity_median', 'support_similarity_p10', 'support_similarity_min', 'rmse', 'median_RMSE', 'rmse_train', 'ess_control', 'effective_pool_size']:
+        if col not in d.columns:
+            d[col] = np.nan
+
+    rmse_col = 'median_RMSE' if d['median_RMSE'].notna().any() else 'rmse'
+    prefit_rmse_cv = pd.to_numeric(d[rmse_col], errors='coerce')
+    prefit_rmse_train = pd.to_numeric(d['rmse_train'], errors='coerce')
+    donor_utilization = (
+        pd.to_numeric(d['ess_control'], errors='coerce') /
+            _numeric_col_or_nan(d, 'effective_pool_size').replace(0, np.nan)
+    )
+
+    out = pd.DataFrame({
+        'effective_pool_size': pd.to_numeric(d.get('effective_pool_size', np.nan), errors='coerce'),
+        'representative_K': pd.to_numeric(d.get('representative_K', np.nan), errors='coerce'),
+        'embedding_similarity_median': pd.to_numeric(d['support_similarity_median'], errors='coerce'),
+        'embedding_similarity_p10': pd.to_numeric(d['support_similarity_p10'], errors='coerce'),
+        'embedding_similarity_min': pd.to_numeric(d['support_similarity_min'], errors='coerce'),
+        'embedding_distance_median': 1.0 - pd.to_numeric(d['support_similarity_median'], errors='coerce'),
+        'embedding_distance_p10': 1.0 - pd.to_numeric(d['support_similarity_p10'], errors='coerce'),
+        'embedding_distance_min': 1.0 - pd.to_numeric(d['support_similarity_min'], errors='coerce'),
+        'prefit_rmse_cv': prefit_rmse_cv,
+        'prefit_rmse_cv_source': rmse_col,
+        'prefit_rmse_train': prefit_rmse_train,
+        'donor_utilization': donor_utilization,
+        # Backward-compatible aliases.
+        'prefit_rmse': prefit_rmse_cv,
+        'prefit_rmse_metric': rmse_col,
+        'trajectory_distance_proxy': prefit_rmse_train,
+        'trajectory_distance_proxy_metric': 'prefit_rmse_train',
+    })
+    out = out.sort_values('effective_pool_size', na_position='last').reset_index(drop=True)
+    return out
+
+
 def load_and_prepare_embeddings(year: int, args, logger) -> Tuple[pd.DataFrame, float]:
     """Load embeddings, validate schema, clean NaNs, and apply optional treated subsampling."""
     embeddings_file = Path(f"Embeddings/data/embeddings/embeddings_{year}.csv")
@@ -195,7 +243,8 @@ def load_or_compute_similarity_cache(
         seed_label = "na" if args.random_seed is None else str(args.random_seed)
         robust_suffix = f"_sub{int(round(subsample_frac * 1000)):03d}_seed{seed_label}"
 
-    similarities_cache = k_selection_dir / str(year) / f"similarities_cache_{year}{robust_suffix}.npy"
+    similarities_cache = DATA_DIR / "embeddings" / f"similarities_cache_{year}{robust_suffix}.npy"
+    legacy_cache = k_selection_dir / str(year) / f"similarities_cache_{year}{robust_suffix}.npy"
     similarities_cache.parent.mkdir(parents=True, exist_ok=True)
 
     if args.force_recompute and similarities_cache.exists():
@@ -207,6 +256,12 @@ def load_or_compute_similarity_cache(
         similarities_array = np.load(similarities_cache, allow_pickle=True).item()
         similarities = {int(k): v for k, v in similarities_array.items()}
         logger.info(f"  ✓ Loaded {len(similarities)} treated pixels from cache")
+    elif legacy_cache.exists():
+        logger.info(f"Loading legacy similarities cache from {legacy_cache}...")
+        similarities_array = np.load(legacy_cache, allow_pickle=True).item()
+        similarities = {int(k): v for k, v in similarities_array.items()}
+        np.save(similarities_cache, similarities)
+        logger.info(f"  ✓ Migrated legacy cache to {similarities_cache}")
     else:
         logger.info("Computing similarities (will be cached for future runs)...")
         similarities = compute_all_similarities_fn(embeddings_df)
@@ -238,26 +293,68 @@ def build_selection_runtime_config(args, load_lambda_hard_gates_fn, build_rollin
         rolling_start = 2000
     if rolling_end is None:
         rolling_end = min(2015, int(treated_year) - 1)
+    # Enforce pre-treatment-only span even when custom years are provided.
+    rolling_end = min(int(rolling_end), int(treated_year) - 1)
+    rolling_start = int(rolling_start)
 
     rolling_windows = None
     if args.use_rolling_windows:
-        rolling_windows = build_rolling_windows_fn(
-            start_year=int(rolling_start),
-            end_year=int(rolling_end),
-            train_length=args.rolling_train_length,
-            test_length=args.rolling_test_length,
-        )
-        if not rolling_windows:
-            raise ValueError(
-                "Rolling windows produced no valid splits. "
-                f"start={rolling_start}, end={rolling_end}, train_length={args.rolling_train_length}, test_length={args.rolling_test_length}."
+        if rolling_end <= rolling_start:
+            logger.warning(
+                "Rolling windows disabled: insufficient pre-treatment span after bounds check "
+                "(start=%s, end=%s, treated_year=%s). Falling back to fixed split.",
+                rolling_start,
+                rolling_end,
+                treated_year,
             )
-        logger.info("Rolling windows enabled: %s windows", len(rolling_windows))
-        for window in rolling_windows:
-            logger.info(
-                "  %s: train=%s-%s test=%s-%s",
-                window['window_id'], window['train_start'], window['train_end'], window['test_start'], window['test_end'],
+        else:
+            requested_train = int(args.rolling_train_length)
+            requested_test = int(args.rolling_test_length)
+            rolling_windows = build_rolling_windows_fn(
+                start_year=int(rolling_start),
+                end_year=int(rolling_end),
+                train_length=requested_train,
+                test_length=requested_test,
             )
+            if not rolling_windows:
+                span_years = int(rolling_end) - int(rolling_start) + 1
+                # Keep test window if possible and shrink train window to fit short histories.
+                fallback_test = max(1, min(requested_test, span_years - 1))
+                fallback_train = span_years - fallback_test
+                rolling_windows = build_rolling_windows_fn(
+                    start_year=int(rolling_start),
+                    end_year=int(rolling_end),
+                    train_length=fallback_train,
+                    test_length=fallback_test,
+                )
+                if rolling_windows:
+                    logger.warning(
+                        "Rolling windows auto-adjusted due to short pre-treatment span: "
+                        "requested train=%s test=%s; using train=%s test=%s over %s-%s",
+                        requested_train,
+                        requested_test,
+                        fallback_train,
+                        fallback_test,
+                        rolling_start,
+                        rolling_end,
+                    )
+                else:
+                    logger.warning(
+                        "Rolling windows disabled: no valid split after auto-adjust "
+                        "(start=%s, end=%s, requested_train=%s, requested_test=%s). "
+                        "Falling back to fixed split.",
+                        rolling_start,
+                        rolling_end,
+                        requested_train,
+                        requested_test,
+                    )
+        if rolling_windows:
+            logger.info("Rolling windows enabled: %s windows", len(rolling_windows))
+            for window in rolling_windows:
+                logger.info(
+                    "  %s: train=%s-%s test=%s-%s",
+                    window['window_id'], window['train_start'], window['train_end'], window['test_start'], window['test_end'],
+                )
 
     # Defaults for non-rolling cross-validation split.
     train_start_year = args.train_start_year
@@ -395,6 +492,16 @@ def write_selection_outputs(
             if col not in raw_df.columns:
                 raw_df[col] = np.nan
         raw_df = raw_df[raw_cols].sort_values('K').reset_index(drop=True)
+        raw_df['effective_pool_size'] = pd.to_numeric(raw_df['pool_size'], errors='coerce')
+        rmse_src_col = 'median_RMSE' if raw_df['median_RMSE'].notna().any() else 'rmse'
+        raw_df['prefit_rmse_cv'] = pd.to_numeric(raw_df[rmse_src_col], errors='coerce')
+        raw_df['prefit_rmse_cv_source'] = rmse_src_col
+        raw_df['prefit_rmse_train'] = pd.to_numeric(raw_df.get('rmse_train', np.nan), errors='coerce')
+        raw_pool = _numeric_col_or_nan(raw_df, 'effective_pool_size').replace(0, np.nan)
+        raw_df['donor_utilization'] = (
+            pd.to_numeric(raw_df.get('ess_control', np.nan), errors='coerce') /
+            raw_pool
+        )
         raw_df.insert(0, 'output_tag', meta['output_tag'])
         raw_df.insert(0, 'experiment_name', meta['experiment_name'])
         raw_df.insert(0, 'year', meta['year'])
@@ -402,7 +509,7 @@ def write_selection_outputs(
 
     frontier_cols = [
         'pool_size', 'pool_prop_full', 'coverage_ratio', 'representative_K',
-        'rmse', 'median_RMSE', 'p90_RMSE', 'max_RMSE',
+        'rmse', 'rmse_train', 'median_RMSE', 'p90_RMSE', 'max_RMSE',
         'max_balance_std', 'mean_balance_std',
         'ess_control', 'ess_ratio',
         'top10_share', 'max_weight_share',
@@ -415,10 +522,101 @@ def write_selection_outputs(
                 frontier_df[col] = np.nan
         frontier_df = frontier_df[frontier_cols].sort_values('pool_size').reset_index(drop=True)
         frontier_df = frontier_df.rename(columns={'pool_size': 'effective_pool_size'})
+        frontier_rmse_src = 'median_RMSE' if frontier_df['median_RMSE'].notna().any() else 'rmse'
+        frontier_df['prefit_rmse_cv'] = pd.to_numeric(frontier_df[frontier_rmse_src], errors='coerce')
+        frontier_df['prefit_rmse_cv_source'] = frontier_rmse_src
+        frontier_df['prefit_rmse_train'] = pd.to_numeric(frontier_df.get('rmse_train', np.nan), errors='coerce')
+        frontier_pool = _numeric_col_or_nan(frontier_df, 'effective_pool_size').replace(0, np.nan)
+        frontier_df['donor_utilization'] = (
+            pd.to_numeric(frontier_df.get('ess_control', np.nan), errors='coerce') /
+            frontier_pool
+        )
         frontier_df.insert(0, 'output_tag', meta['output_tag'])
         frontier_df.insert(0, 'experiment_name', meta['experiment_name'])
         frontier_df.insert(0, 'year', meta['year'])
         _write_csv_atomic(frontier_df, output_dir / 'embedding_pool_frontier.csv')
+
+    unified_df = pd.DataFrame()
+    if not raw_df.empty:
+        unified_df = raw_df.copy()
+        if not frontier_df.empty:
+            frontier_map_cols = [
+                c for c in ['effective_pool_size', 'representative_K', 'k_values', 'k_equivalent_count']
+                if c in frontier_df.columns
+            ]
+            if frontier_map_cols:
+                frontier_map = frontier_df[frontier_map_cols].drop_duplicates(subset=['effective_pool_size'])
+                unified_df = unified_df.merge(frontier_map, on='effective_pool_size', how='left', suffixes=('', '_frontier'))
+        unified_df['is_representative_k'] = (
+            pd.to_numeric(unified_df.get('K', np.nan), errors='coerce') ==
+            pd.to_numeric(unified_df.get('representative_K', np.nan), errors='coerce')
+        )
+        _write_csv_atomic(unified_df, output_dir / 'embedding_k_pool_metrics_unified.csv')
+
+    distance_fit_df = _build_distance_fit_diagnostics(frontier_df)
+    if not distance_fit_df.empty:
+        distance_fit_df.insert(0, 'output_tag', meta['output_tag'])
+        distance_fit_df.insert(0, 'experiment_name', meta['experiment_name'])
+        distance_fit_df.insert(0, 'year', meta['year'])
+        _write_csv_atomic(distance_fit_df, output_dir / 'embedding_distance_fit_diagnostics.csv')
+
+    # Plateau stability report: summarize sensitivity across RMSE-plateau K values.
+    if not frontier_df.empty:
+        plateau = frontier_df.copy()
+        rmse_obj_col = 'median_RMSE' if ('median_RMSE' in plateau.columns and plateau['median_RMSE'].notna().any()) else 'rmse'
+        rmse_obj = pd.to_numeric(plateau.get(rmse_obj_col, np.nan), errors='coerce')
+        if rmse_obj.notna().any():
+            rmse_min = float(rmse_obj.min(skipna=True))
+            rmse_threshold = float(rmse_min * 1.05)
+            plateau = plateau[rmse_obj <= (rmse_threshold + 1e-12)].copy()
+            if not plateau.empty:
+                effect_candidates = [
+                    'att', 'att_gap', 'effect', 'effect_lag', 'treated_minus_control',
+                    'rmse_test', 'median_RMSE', 'rmse',
+                ]
+                effect_col = next((c for c in effect_candidates if c in plateau.columns and pd.to_numeric(plateau[c], errors='coerce').notna().any()), rmse_obj_col)
+                effect_vals = pd.to_numeric(plateau.get(effect_col, np.nan), errors='coerce')
+
+                plateau_out = plateau.copy()
+                plateau_out.insert(0, 'effect_metric', effect_col)
+                plateau_out.insert(0, 'rmse_threshold_1p05', rmse_threshold)
+                plateau_out.insert(0, 'rmse_min', rmse_min)
+                keep_cols = [
+                    'year', 'experiment_name', 'output_tag', 'rmse_min', 'rmse_threshold_1p05',
+                    'effect_metric', 'representative_K', 'effective_pool_size',
+                    rmse_obj_col, effect_col, 'ess_control', 'ess_ratio', 'donor_utilization', 'top10_share', 'max_weight_share',
+                ]
+                plateau_pool = _numeric_col_or_nan(plateau_out, 'effective_pool_size').replace(0, np.nan)
+                plateau_out['donor_utilization'] = (
+                    pd.to_numeric(plateau_out.get('ess_control', np.nan), errors='coerce') /
+                    plateau_pool
+                )
+                for col in keep_cols:
+                    if col not in plateau_out.columns:
+                        plateau_out[col] = np.nan
+                plateau_out = plateau_out[keep_cols].sort_values(['representative_K', 'effective_pool_size']).reset_index(drop=True)
+                _write_csv_atomic(plateau_out, output_dir / 'plateau_k_stability.csv')
+
+                valid_effect = effect_vals[np.isfinite(effect_vals)]
+                if len(valid_effect) > 0:
+                    sign_consistency = float(max((valid_effect > 0).mean(), (valid_effect < 0).mean()))
+                    iqr = float(np.nanpercentile(valid_effect, 75) - np.nanpercentile(valid_effect, 25))
+                    summary = pd.DataFrame([{
+                        'year': int(year),
+                        'experiment_name': str(args.experiment_name),
+                        'output_tag': str(args.output_tag),
+                        'plateau_k_count': int(len(plateau_out)),
+                        'effect_metric': effect_col,
+                        'effect_median': float(np.nanmedian(valid_effect)),
+                        'effect_iqr': iqr,
+                        'effect_min': float(np.nanmin(valid_effect)),
+                        'effect_max': float(np.nanmax(valid_effect)),
+                        'sign_consistency_rate': sign_consistency,
+                        'rmse_objective_column': rmse_obj_col,
+                        'rmse_min': rmse_min,
+                        'rmse_threshold_1p05': rmse_threshold,
+                    }])
+                    _write_csv_atomic(summary, output_dir / 'plateau_k_stability_summary.csv')
 
     random_cols = [
         'pool_size', 'pool_prop_full', 'median_RMSE', 'p90_RMSE',
@@ -433,6 +631,11 @@ def write_selection_outputs(
     if not random_df.empty:
         random_df = random_df.sort_values('pool_size').reset_index(drop=True)
         random_df = random_df.rename(columns={'pool_size': 'effective_pool_size'})
+    random_pool = _numeric_col_or_nan(random_df, 'effective_pool_size').replace(0, np.nan)
+    random_df['donor_utilization'] = (
+        pd.to_numeric(random_df.get('median_ess_control', np.nan), errors='coerce') /
+        random_pool
+    )
     random_df.insert(0, 'output_tag', meta['output_tag'])
     random_df.insert(0, 'experiment_name', meta['experiment_name'])
     random_df.insert(0, 'year', meta['year'])
@@ -470,9 +673,11 @@ def write_selection_outputs(
         support_df.insert(0, 'year', meta['year'])
         _write_csv_atomic(support_df, output_dir / 'similarity_support.csv')
 
-    selected_controls_csv = (
-        DATA_DIR / "cbps_integration" / str(year) /
-        f"selected_controls_k{int(results['optimal_K'])}{tag_suffix}_{year}.csv"
+    selected_controls_csv = Path(
+        results.get(
+            'optimal_selected_controls_path',
+            DATA_DIR / "cbps_integration" / str(year) / f"selected_controls_k{int(results['optimal_K'])}{tag_suffix}_{year}.csv",
+        )
     )
 
     commands_csv_path, commands_sh_path = write_pipeline_commands_fn(
@@ -629,11 +834,15 @@ def write_selection_outputs(
         logger.info(f"  - {summary_name} (selection summary)")
     logger.info("  - embedding_k_raw_results.csv (raw evaluated K records)")
     logger.info("  - embedding_pool_frontier.csv (effective donor-pool frontier)")
+    logger.info("  - embedding_k_pool_metrics_unified.csv (raw K + effective-pool mapping + full metrics)")
+    logger.info("  - embedding_distance_fit_diagnostics.csv (plot-ready distance/fit validation table)")
     logger.info("  - pool_discovery_scan.csv (dense reachable donor-pool scan)")
     logger.info("  - pool_size_grid.csv (effective donor-pool experiment grid)")
     logger.info("  - random_pool_summary.csv (random benchmark by pool size)")
     logger.info("  - pool_overlap_diagnostics.csv (adjacent frontier overlap diagnostics)")
     logger.info("  - similarity_support.csv (embedding support quality by pool size)")
+    logger.info("  - plateau_k_stability.csv (per-K sensitivity within RMSE plateau)")
+    logger.info("  - plateau_k_stability_summary.csv (plateau effect stability summary)")
     logger.info("  - selection_decision.json (transparent final decision record)")
     logger.info("  - run_audit.json (assertion audit for this year/run)")
     logger.info(f"  - {commands_csv_path.name} (pipeline commands in CSV)")

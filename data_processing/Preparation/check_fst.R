@@ -1,3 +1,6 @@
+#' Inspect and summarize FST climate data files
+#'
+#' This script inspects FST files, checks for coordinate columns, and summarizes climate variables for quality control.
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({

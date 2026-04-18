@@ -77,6 +77,27 @@ def _cache_meta_matches(year: int, output_prefix: str, train_years: List[int], t
     except Exception:
         return False
 
+
+def _cbps_artifact_paths(year: int, output_prefix: str) -> List[Path]:
+    base = CBPS_INTEGRATION_DIR / str(year)
+    suffix = f"_{output_prefix}_{year}.csv"
+    return [
+        base / f"cbps_metrics{suffix}",
+        base / f"cbps_rmse_windows{suffix}",
+        base / f"cbps_weights{suffix}",
+        base / f"cbps_weights_full{suffix}",
+        base / f"selected_controls{suffix}",
+        _cache_meta_path(year, output_prefix),
+    ]
+
+
+def _cleanup_cbps_artifacts(year: int, output_prefix: str) -> None:
+    for p in _cbps_artifact_paths(year, output_prefix):
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            continue
+
 def get_k_nearest_union(similarities: Dict[int, np.ndarray], K: int) -> Set[int]:
     """
     Get union of K nearest controls for all treated pixels
@@ -215,22 +236,61 @@ def _warn_if_pool_frontier_saturated(frontier_df: pd.DataFrame, n_controls_full:
         logger.warning("Embedding donor pools saturate too quickly - limited design variation.")
 
 
-def select_phase2_pool(effective_pool_df: pd.DataFrame, full_control_pool: int) -> Dict[str, int]:
-    """Step 7: choose the largest embedding-filtered pool strictly smaller than full pool."""
+def select_phase2_pool(
+    effective_pool_df: pd.DataFrame,
+    full_control_pool: int,
+    phase2_policy: str = "pool_then_k",
+) -> Dict[str, int]:
+    """Step 7: choose phase-2 pool by RMSE-elbow rule.
+
+    Rule:
+    1) Find the minimum pre-treatment RMSE on the effective frontier.
+    2) Keep K values with RMSE <= 1.05 * min_RMSE.
+     3) Apply policy tie-break inside the near-optimal plateau:
+         - pool_then_k (default): smallest realized pool_size, then smallest representative_K.
+         - k_then_pool: smallest representative_K, then smallest pool_size.
+    """
     if effective_pool_df.empty:
         raise ValueError("Cannot select phase-2 pool from empty frontier")
 
     d = effective_pool_df.copy()
-    d['pool_size'] = pd.to_numeric(d['pool_size'], errors='coerce').astype(int)
-    d['representative_K'] = pd.to_numeric(d.get('representative_K', d.get('K', np.nan)), errors='coerce').astype(int)
+    d['pool_size'] = pd.to_numeric(d['pool_size'], errors='coerce')
+    d['representative_K'] = pd.to_numeric(d.get('representative_K', d.get('K', np.nan)), errors='coerce')
+    d['rmse_objective'] = pd.to_numeric(
+        d['median_RMSE'] if ('median_RMSE' in d.columns and d['median_RMSE'].notna().any()) else d['rmse'],
+        errors='coerce',
+    )
+    d = d.dropna(subset=['pool_size', 'representative_K', 'rmse_objective']).copy()
+    if d.empty:
+        raise ValueError("Cannot select phase-2 pool: no rows with valid pool_size/K/RMSE")
+
+    d['pool_size'] = d['pool_size'].astype(int)
+    d['representative_K'] = d['representative_K'].astype(int)
+
     eligible = d[d['pool_size'] < int(full_control_pool)].copy()
     if eligible.empty:
         eligible = d.copy()
-    pick = eligible.sort_values(['pool_size', 'representative_K']).iloc[-1]
+
+    rmse_min = float(eligible['rmse_objective'].min())
+    rmse_threshold = rmse_min * 1.05
+    near_opt = eligible[eligible['rmse_objective'] <= (rmse_threshold + 1e-12)].copy()
+    if near_opt.empty:
+        near_opt = eligible.copy()
+
+    policy = str(phase2_policy or "pool_then_k").strip().lower()
+    if policy == 'k_then_pool':
+        sort_cols = ['representative_K', 'pool_size']
+        selection_rule = 'rmse_plateau_smallest_k_then_pool'
+    else:
+        sort_cols = ['pool_size', 'representative_K']
+        selection_rule = 'rmse_plateau_smallest_pool_then_k'
+
+    pick = near_opt.sort_values(sort_cols).iloc[0]
     return {
         'selected_pool_size': int(pick['pool_size']),
         'selected_K': int(pick['representative_K']),
-        'selection_rule': 'largest_pool_before_full',
+        'selection_rule': selection_rule,
+        'phase2_policy': policy,
         'purpose': 'phase2_comparison',
     }
 
@@ -453,6 +513,7 @@ def run_random_pool_experiment(
     random_seed: Optional[int] = None,
     train_years: Optional[List[int]] = None,
     test_years: Optional[List[int]] = None,
+    random_mode: str = "pool",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Run null benchmark by random control sampling matched to each realized pool frontier size."""
     rng = np.random.default_rng(random_seed)
@@ -475,8 +536,23 @@ def run_random_pool_experiment(
         target_pool = min(target_pool, len(control_idx))
         logger.info("[RANDOM] representative_K=%s target pool size=%s", rep_k, target_pool)
         for rep in range(1, random_reps + 1):
-            sampled = rng.choice(control_idx, size=target_pool, replace=False)
+            if str(random_mode).lower() in ("per_treated", "per-treated", "per-treated-k"):
+                # Sample K random controls per treated unit, then take the union — mirrors embedding K-nearest union behavior.
+                per_treated_samples = []
+                for t_idx in range(n_treated):
+                    # allow overlap across treated samples; sample without replacement within each treated draw
+                    draw_size = min(rep_k, len(control_idx))
+                    per_treated_samples.append(rng.choice(control_idx, size=draw_size, replace=False))
+                sampled = np.unique(np.concatenate(per_treated_samples)).astype(int)
+                # If union exceeds target_pool, randomly downsample to target_pool for parity with embedding pool_size
+                if len(sampled) > target_pool:
+                    sampled = rng.choice(sampled, size=target_pool, replace=False)
+            else:
+                # Default: uniform random pool of size equal to realized embedding pool size
+                sampled = rng.choice(control_idx, size=target_pool, replace=False)
             output_prefix = f"random_pool{target_pool}_k{rep_k}_rep{rep}" + (f"_{output_tag}" if output_tag else "")
+            if str(random_mode).lower() != "pool":
+                output_prefix = output_prefix + f"_mode{str(random_mode)}"
             result = run_cbps_crossval(
                 embeddings_df=embeddings_df,
                 selected_controls=set(int(x) for x in sampled.tolist()),
@@ -632,7 +708,7 @@ def build_effective_pool_table(
     d['K'] = pd.to_numeric(d['K'], errors='coerce').astype(int)
 
     metric_cols = [
-        'rmse', 'median_RMSE', 'p90_RMSE', 'max_RMSE',
+        'rmse', 'rmse_train', 'median_RMSE', 'p90_RMSE', 'max_RMSE',
         'max_balance_std', 'mean_balance_std',
         'ess_control', 'ess_ratio',
         'top10_share', 'max_weight_share',
@@ -675,6 +751,7 @@ def build_effective_pool_table(
         'k_values',
         'k_equivalent_count',
         'rmse',
+        'rmse_train',
         'median_RMSE',
         'p90_RMSE',
         'max_RMSE',
@@ -769,7 +846,8 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
                       experiment_name: str = "full_pool",
                       analysis_base_dir: str = "data/processed_data/rev_analysis_low",
                       save_full_weights: bool = False,
-                      rolling_windows: Optional[List[Dict[str, int]]] = None) -> Dict:
+                      rolling_windows: Optional[List[Dict[str, int]]] = None,
+                      persist_artifacts: bool = False) -> Dict:
     """
     Run CBPS with cross-validation to compute RMSPE
     
@@ -837,12 +915,9 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
     # Note: selected_controls contains DataFrame indices (which are 0-based after reset_index)
     selected_units = embeddings_df.loc[list(selected_controls), 'unit'].tolist()
     
-    # Save selected controls to permanent file for diagnostics
+    # Ensure output directory exists for R outputs.
     output_dir = CBPS_INTEGRATION_DIR / str(year)
     output_dir.mkdir(parents=True, exist_ok=True)
-    selected_units_file = output_dir / f"selected_controls_{output_prefix}_{year}.csv"
-    pd.DataFrame({'unit': selected_units}).to_csv(selected_units_file, index=False)
-    logger.info(f"    Selected controls saved to: {selected_units_file}")
     
     # Create temporary CSV with selected units
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
@@ -966,7 +1041,7 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
             test_years=test_years,
             rolling_windows=rolling_windows,
         )
-        return {
+        out = {
             'rmse': float(metrics['rmse_test'].iloc[0]),
             'rmse_train': float(metrics['rmse_train'].iloc[0]),
             'median_RMSE': float(metrics['median_rmse_test'].iloc[0]) if 'median_rmse_test' in metrics.columns else np.nan,
@@ -982,6 +1057,9 @@ def run_cbps_crossval(embeddings_df: pd.DataFrame,
             'convergence': int(metrics['converged'].iloc[0]),
             'n_controls_used': int(metrics['n_control'].iloc[0])
         }
+        if not persist_artifacts:
+            _cleanup_cbps_artifacts(year=year, output_prefix=output_prefix)
+        return out
     finally:
         # Clean up temporary file
         Path(temp_csv).unlink(missing_ok=True)
@@ -1082,6 +1160,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
                     K_candidates: List[int],
                     year: int,
                     min_ratio: int = 10,
+                    max_control_ratio: Optional[float] = 20.0,
+                    phase2_policy: str = "pool_then_k",
                     force_recompute: bool = False,
                     max_workers: int = 6,
                     output_tag: str = "",
@@ -1090,10 +1170,12 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
                     save_full_weights: bool = False,
                     gates: Optional[Dict[str, float]] = None,
                     rolling_windows: Optional[List[Dict[str, int]]] = None,
-                    random_baseline_reps: int = 0,
+                    random_baseline_reps: int = 100,
                     random_seed: Optional[int] = None,
+                    random_mode: str = "pool",
                     train_years: Optional[List[int]] = None,
-                    test_years: Optional[List[int]] = None) -> Dict:
+                    test_years: Optional[List[int]] = None,
+                    keep_per_k_artifacts: bool = False) -> Dict:
     """
     Complete K selection pipeline
     Args:
@@ -1116,6 +1198,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     logger.info(f"Control pool: {n_controls}")
     logger.info(f"K candidates: {K_candidates}")
     logger.info(f"Min control ratio: {min_ratio}× treated")
+    if max_control_ratio is not None and float(max_control_ratio) > 0:
+        logger.info(f"Max control ratio: {float(max_control_ratio):.2f}× treated")
     logger.info(f"Parallelization: {max_workers} workers")
 
     train_years = train_years or list(range(2000, 2011))
@@ -1145,10 +1229,22 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
 
     # Step 2: build experiment grid directly on unique effective pool sizes.
     min_controls_required = int(min_ratio * n_treated)
+    max_controls_allowed = None
+    if max_control_ratio is not None and float(max_control_ratio) > 0:
+        max_controls_allowed = int(float(max_control_ratio) * n_treated)
     unique_pool_df = build_unique_pool_frontier(pool_discovery_df)
     unique_pool_df = unique_pool_df[unique_pool_df['pool_size'] >= min_controls_required].copy().reset_index(drop=True)
+    if max_controls_allowed is not None:
+        unique_pool_df = unique_pool_df[unique_pool_df['pool_size'] <= max_controls_allowed].copy().reset_index(drop=True)
     if unique_pool_df.empty:
-        logger.error("No effective donor pools satisfy minimum size requirement: %s", min_controls_required)
+        if max_controls_allowed is None:
+            logger.error("No effective donor pools satisfy minimum size requirement: %s", min_controls_required)
+        else:
+            logger.error(
+                "No effective donor pools satisfy size requirements: min=%s, max=%s",
+                min_controls_required,
+                max_controls_allowed,
+            )
         return None
     pool_grid_df = compress_effective_pool_grid(unique_pool_df, max_points=25, target_points=16)
     valid_K = sorted(pool_grid_df['K'].astype(int).tolist())
@@ -1182,6 +1278,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     def load_cached_metrics(K: int) -> Optional[Dict]:
         output_prefix = f"k{K}" + (f"_{output_tag}" if output_tag else "")
         metrics_file = CBPS_INTEGRATION_DIR / str(year) / f"cbps_metrics_{output_prefix}_{year}.csv"
+        if not keep_per_k_artifacts:
+            return None
         if not metrics_file.exists() or force_recompute:
             return None
         if not _cache_meta_matches(
@@ -1335,19 +1433,34 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     if hash_dupes > 0:
         logger.warning("Multiple grid points correspond to identical donor pools")
 
-    phase2 = select_phase2_pool(effective_pool_df, full_control_pool=n_controls)
+    phase2 = select_phase2_pool(
+        effective_pool_df,
+        full_control_pool=n_controls,
+        phase2_policy=phase2_policy,
+    )
     optimal_K = int(phase2['selected_K'])
     optimal_pool = int(phase2['selected_pool_size'])
     selection_mode = str(phase2['selection_rule'])
+    phase2_policy = str(phase2.get('phase2_policy', phase2_policy))
 
     selection_table = effective_pool_df.sort_values('pool_size').reset_index(drop=True)
+    objective_col = 'median_RMSE' if ('median_RMSE' in selection_table.columns and selection_table['median_RMSE'].notna().any()) else 'rmse'
+    rmse_series = pd.to_numeric(selection_table.get(objective_col, np.nan), errors='coerce')
+    degenerate_rmse_frontier = bool(
+        rmse_series.notna().any() and
+        float(rmse_series.max(skipna=True) - rmse_series.min(skipna=True)) <= 1e-4
+    )
+    if degenerate_rmse_frontier:
+        logger.warning(
+            "Degenerate pre-treatment RMSE frontier detected (spread <= 1e-4 across effective pools). "
+            "Selection will rely on RMSE-plateau tie-break policy plus ESS/balance guardrails."
+        )
     overlap_df = build_pool_overlap_diagnostics(
         similarities=similarities,
         effective_pool_table=selection_table,
         year=year,
     )
     _warn_if_metrics_invariant(selection_table)
-    objective_col = 'median_RMSE' if ('median_RMSE' in effective_pool_df.columns and effective_pool_df['median_RMSE'].notna().any()) else 'rmse'
     optimal_rmse = float(
         effective_pool_df.loc[
             effective_pool_df['representative_K'] == optimal_K,
@@ -1357,9 +1470,19 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
     logger.info(f"\n{'='*80}")
     logger.info(f"OPTIMAL POOL SELECTED: pool_size={optimal_pool} (representative K={optimal_K})")
     logger.info(f"Selection mode: {selection_mode}")
+    logger.info(f"Phase-2 policy: {phase2_policy}")
     logger.info(f"Pre-treatment RMSE: {optimal_rmse:.4f}")
     logger.info(f"Control pool size: {optimal_pool}")
     logger.info(f"{'='*80}\n")    
+
+    # Persist one canonical selected-controls file for downstream phase-2 command wiring.
+    optimal_prefix = f"k{optimal_K}" + (f"_{output_tag}" if output_tag else "")
+    optimal_selected_controls = get_k_nearest_union(similarities, optimal_K)
+    optimal_units = embeddings_df.loc[list(optimal_selected_controls), 'unit'].astype(str).tolist()
+    optimal_controls_path = CBPS_INTEGRATION_DIR / str(year) / f"selected_controls_{optimal_prefix}_{year}.csv"
+    optimal_controls_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({'unit': sorted(set(optimal_units))}).to_csv(optimal_controls_path, index=False)
+    logger.info("Saved canonical selected-controls file: %s", optimal_controls_path)
     random_rep_df = pd.DataFrame()
     random_summary_df = pd.DataFrame()
     if random_baseline_reps > 0:
@@ -1376,6 +1499,7 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
                 save_full_weights=save_full_weights,
                 rolling_windows=rolling_windows,
                 random_seed=random_seed,
+                random_mode=random_mode,
                 train_years=train_years,
                 test_years=test_years,
             )
@@ -1388,6 +1512,8 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
         'optimal_rmse': float(optimal_rmse),
         'selection_mode': selection_mode,
         'selection_rule': selection_mode,
+        'phase2_policy': phase2_policy,
+        'optimal_selected_controls_path': str(optimal_controls_path),
         'elbow_metrics': elbow_df,
         'pool_discovery_scan': pool_discovery_df.sort_values('K').reset_index(drop=True),
         'pool_size_grid': mapping_df.sort_values('effective_pool_size').reset_index(drop=True),
@@ -1408,7 +1534,11 @@ def select_optimal_k(similarities: Dict[int, np.ndarray],
             'n_effective_pool_rows': int(len(selection_table)),
             'n_duplicate_pool_rows_collapsed': int(max(0, len(rmse_df) - len(selection_table))),
             'selection_purpose': 'phase2_comparison',
+            'phase2_policy': phase2_policy,
             'duplicate_donor_hash_rows': int(hash_dupes),
+            'min_controls_required': int(min_controls_required),
+            'max_controls_allowed': int(max_controls_allowed) if max_controls_allowed is not None else None,
+            'degenerate_rmse_frontier': bool(degenerate_rmse_frontier),
         },
         'plots': {},
     }

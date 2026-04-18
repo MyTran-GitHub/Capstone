@@ -13,23 +13,30 @@ library("gridExtra")
 library("scales")  # For alpha() function in maps
 options(tigris_use_cache = TRUE)
 
-# OPTIMIZATION: Set which sections to run (TRUE/FALSE)
+
+args <- commandArgs(trailingOnly = TRUE)
+EXPERIMENT_NAME <- if (length(args) >= 1 && nzchar(args[1])) args[1] else "full_pool"
+cat("Using experiment:", EXPERIMENT_NAME, "\n")
+
 RUN_BALANCE_PLOTS <- TRUE
-RUN_MAPS <- TRUE
-RUN_FIRE_FREQ_TABLE <- TRUE
-RUN_BALANCE_SUMMARY <- TRUE
 RUN_EVALUES <- TRUE
 
-outDir <- "data/processed_data/"
-resultDir <- "data/outputs/"
+outDir <- "data/processed_data"
+analysisDir <- file.path(outDir, "rev_analysis_low", EXPERIMENT_NAME)
+resultDir <- file.path("data/outputs")
 
-# Create output directories
-dir.create(file.path(resultDir, "balance"), recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(resultDir, "maps"), recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(resultDir, "main_results"), recursive = TRUE, showWarnings = FALSE)
+# Helper: prefer *_full.RDS weights if available (produced by selection diagnostics)
+choose_weights_path <- function(analysis_dir, treated_year, area) {
+  base <- file.path(analysis_dir, paste0("cbps_weights_", treated_year, "_", area, ".RDS"))
+  full <- file.path(analysis_dir, paste0("cbps_weights_", treated_year, "_", area, "_full.RDS"))
+  if (file.exists(full)) return(full)
+  return(base)
+}
 
+dir.create(file.path(resultDir, "balance", EXPERIMENT_NAME), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(resultDir, "main_results", EXPERIMENT_NAME), recursive = TRUE, showWarnings = FALSE)
 # Figure 3 covariate balance check
-
+# Setting c(2006:2020) temporarily to match treated years with available covariate data; adjust as needed for other analyses/years
 if (RUN_BALANCE_PLOTS) {
 parameters <- expand.grid(c(2006:2020), c("conifer"))
 # NOTE: Disturbance data (fire_disturb_, timber_, drought_, greening_, browning_) not included - only 9 covariates available
@@ -40,20 +47,34 @@ for (year_area in seq_len(nrow(parameters))) {
   #year_area <- 1
   treated.year = as.numeric(parameters[year_area, 1])
   area = as.character(parameters[year_area, 2])
-  df = readRDS(file.path(outDir, "rev_analysis_low", paste0("analysis_treated", treated.year, "_", area, ".RDS")))
+  df = readRDS(file.path(analysisDir,
+      paste0("analysis_treated", treated.year, "_", area, ".RDS")))
   
   if (is.null(df) || nrow(df) == 0) {
     cat("  ERROR: Empty analysis data for year", treated.year, "area", area, "\n")
     next
   }
   
-  weights = readRDS(file.path(outDir, "rev_analysis_low", paste0("cbps_weights_", treated.year, "_", area, ".RDS")))
+  weights_path <- choose_weights_path(analysisDir, treated.year, area)
+  weights = tryCatch(readRDS(weights_path), error = function(e) NULL)
   if (is.null(weights) || nrow(weights) == 0) {
-    cat("  ERROR: Empty weights data for year", treated.year, "area", area, "\n")
+    cat("  ERROR: Empty weights data for year", treated.year, "area", area, " (path:", weights_path, ")\n")
     next
   }
-  
+
+  # Ensure join keys are same type to avoid accidental NAs
+  if ("unit" %in% names(df)) df$unit <- as.character(df$unit)
+  if ("unit" %in% names(weights)) weights$unit <- as.character(weights$unit)
+
   df_weight <- merge(df, weights[, c("unit", "weight")], by = "unit", all.x = TRUE)
+  na_count <- sum(is.na(df_weight$weight))
+  if (na_count > 0) {
+    if (grepl("_full\\.RDS$", weights_path)) {
+      cat("  WARNING:", na_count, "units still missing weights for year", treated.year, "even after using full weights - replacing with 1\n")
+    } else {
+      cat("  WARNING:", na_count, "units missing weights for year", treated.year, "(using donor-only weights at:", weights_path, ") - replacing with 1\n")
+    }
+  }
   if (any(is.na(df_weight$weight))) {
     cat("  WARNING: Some weights are NA for year", treated.year, "- replacing with 1\n")
     df_weight$weight[is.na(df_weight$weight)] <- 1
@@ -89,6 +110,10 @@ for (year_area in seq_len(nrow(parameters))) {
     })
   }
   
+      if (is.null(weights) || nrow(weights) == 0) {
+        cat("  ERROR: Empty weights for map year", treated.year, " (path:", weights_path, ")\n")
+        next
+      }
   post_bal <- replace(post_bal, is.infinite(post_bal), 0)
   pre_bal <- replace(pre_bal, is.infinite(pre_bal), 0)
   post_bal[is.na(post_bal)] <- 0
@@ -126,7 +151,7 @@ for (year_area in seq_len(nrow(parameters))) {
   ggtitle(paste0(treated.year, ", ", str_to_title(area))) + 
     xlab("Standardized Mean Differences") +
     xlim(min(balance$SMD) - 0.01, max(balance$SMD) + 0.01)
-  ggsave(file.path(resultDir, "balance", paste0("Covariate_Balance" , treated.year, "across",  area, ".jpeg")), 
+  ggsave(file.path(resultDir, "balance", EXPERIMENT_NAME, paste0("Covariate_Balance" , treated.year, "across",  area, ".jpeg")), 
          balance_p, 
          width = 8.5 / 1.6,
          height = 11 / 1.6,
@@ -156,13 +181,26 @@ for (year_area in seq_len(nrow(parameters))) {
     next
   }
   
-  weights = readRDS(file.path(outDir, "rev_analysis_low", paste0("cbps_weights_", treated.year, "_", area, ".RDS")))
+  weights_path <- choose_weights_path(outDir, treated.year, area)
+  weights = tryCatch(readRDS(weights_path), error = function(e) NULL)
   if (is.null(weights) || nrow(weights) == 0) {
-    cat("  ERROR: Empty weights for map year", treated.year, "\n")
+    cat("  ERROR: Empty weights for map year", treated.year, " (path:", weights_path, ")\n")
     next
   }
-  
+  if ("unit" %in% names(df)) df$unit <- as.character(df$unit)
+  if ("unit" %in% names(weights)) weights$unit <- as.character(weights$unit)
   df_weight <- merge(df, weights[, c("unit", "weight")], by = "unit", all.x = TRUE)
+  na_count2 <- sum(is.na(df_weight$weight))
+  if (na_count2 > 0) {
+    if (grepl("_full\\.RDS$", weights_path)) {
+      cat("  WARNING:", na_count2, "units still missing weights for map year", treated.year, "even after using full weights - replacing with 1\n")
+    } else {
+      cat("  WARNING:", na_count2, "units missing weights for map year", treated.year, "(using donor-only weights at:", weights_path, ") - replacing with 1\n")
+    }
+  }
+  if (any(is.na(df_weight$weight))) {
+    df_weight$weight[is.na(df_weight$weight)] <- 1
+  }
   
   # Validate required columns for map
   if (!all(c("LATITUDE", "LONGITUDE", "weight") %in% colnames(df_weight))) {
@@ -251,7 +289,11 @@ area = as.character(parameters[year_area, 2])
 df = readRDS(file.path(outDir, "rev_analysis_low", paste0("analysis_treated", treated.year, "_", area, ".RDS")))
 
 weights = readRDS(file.path(outDir, "rev_analysis_low", paste0("cbps_weights_", treated.year, "_", area, ".RDS")))
-df_weight <- merge(df, weights[, c("unit", "weight")], by = "unit", all.x = TRUE)
+  if ("unit" %in% names(df)) df$unit <- as.character(df$unit)
+  if ("unit" %in% names(weights)) weights$unit <- as.character(weights$unit)
+  df_weight <- merge(df, weights[, c("unit", "weight")], by = "unit", all.x = TRUE)
+  na_count3 <- sum(is.na(df_weight$weight))
+  if (na_count3 > 0) cat("  WARNING:", na_count3, "units missing weights for summary year", treated.year, "- will replace with 1\n")
 
 df_weight$unit <- NULL
 df_weight$LATITUDE <- NULL

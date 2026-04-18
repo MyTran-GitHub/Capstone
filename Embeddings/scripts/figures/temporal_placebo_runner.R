@@ -82,6 +82,11 @@ run_one_year <- function(fake_year, run_idx) {
 
   post_years <- seq.int(fake_year + post_lag, length.out = post_year_count)
   post_years_str <- paste(post_years, collapse = ",")
+  pre_years <- seq.int(2000L, fake_year - 1L)
+  if (length(pre_years) == 0L) {
+    stop("Cannot run temporal placebo for fake_year ", fake_year, ": no available pre_years")
+  }
+  pre_years_str <- paste(pre_years, collapse = ",")
 
   # Offset seed per year for deterministic and independent draws across placebo years.
   this_seed_base <- as.integer(seed_base + run_idx * 100000L)
@@ -90,6 +95,7 @@ run_one_year <- function(fake_year, run_idx) {
     "Embeddings/scripts/figures/placebo_att_simulator.R",
     paste0("year=", fake_year),
     paste0("B=", as.integer(B)),
+    paste0("pre_years=", pre_years_str),
     paste0("post_years=", post_years_str),
     paste0("out_dir=", fake_out_dir),
     paste0("assignment_mode=", assignment_mode),

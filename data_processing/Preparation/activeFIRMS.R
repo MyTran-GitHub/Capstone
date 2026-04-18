@@ -1,3 +1,6 @@
+#' Snap FIRMS fire data to CA raster grid
+#'
+#' This script processes FIRMS fire data, snapping to a standardized CA raster grid and summarizing by space and time.
 # Snap FIRMS fire data to CA raster grid, keeping all grid points which have had a fire in 2000-2021.
 rm(list = ls())
 

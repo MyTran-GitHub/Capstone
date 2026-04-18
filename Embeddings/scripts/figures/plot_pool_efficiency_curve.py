@@ -48,20 +48,24 @@ def main() -> int:
     ax.plot(emb[emb_x], emb[rmse_col], marker="o", linewidth=2.1, label="embedding frontier")
 
     if rnd_fp.exists():
-        rnd = _load_csv(rnd_fp)
-        rnd_x = _pool_col(rnd)
-        rnd = rnd.sort_values(rnd_x)
-        if "median_RMSE" in rnd.columns and rnd["median_RMSE"].notna().any():
-            ax.plot(rnd[rnd_x], rnd["median_RMSE"], marker="s", linestyle="--", linewidth=1.8, label="random pool baseline")
-            # Optional uncertainty band: [median, p90].
-            if "p90_RMSE" in rnd.columns and rnd["p90_RMSE"].notna().any():
-                ax.fill_between(
-                    rnd[rnd_x],
-                    rnd["median_RMSE"],
-                    rnd["p90_RMSE"],
-                    alpha=0.16,
-                    label="random p90 band",
-                )
+        try:
+            rnd = _load_csv(rnd_fp)
+            rnd_x = _pool_col(rnd)
+            rnd = rnd.sort_values(rnd_x)
+            if "median_RMSE" in rnd.columns and rnd["median_RMSE"].notna().any():
+                ax.plot(rnd[rnd_x], rnd["median_RMSE"], marker="s", linestyle="--", linewidth=1.8, label="random pool baseline")
+                # Optional uncertainty band: [median, p90].
+                if "p90_RMSE" in rnd.columns and rnd["p90_RMSE"].notna().any():
+                    ax.fill_between(
+                        rnd[rnd_x],
+                        rnd["median_RMSE"],
+                        rnd["p90_RMSE"],
+                        alpha=0.16,
+                        label="random p90 band",
+                    )
+        except ValueError:
+            # Random baseline is optional; proceed with embedding frontier only.
+            pass
 
     full_row = emb.loc[emb[emb_x].idxmax()]
     ax.scatter([full_row[emb_x]], [full_row[rmse_col]], marker="D", s=72, label="full control pool baseline")

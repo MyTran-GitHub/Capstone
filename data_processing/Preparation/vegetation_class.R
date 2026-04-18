@@ -1,3 +1,6 @@
+#' Prepare forest vegetation grid for California
+#'
+#' This script prepares a robust, centroid-based forest vegetation grid for California using a conifer mask and grid cell polygons.
 
 # Prepare forest vegetation grid for California based on conifer mask (robust, centroid-based, error-checked)
 library(sf)

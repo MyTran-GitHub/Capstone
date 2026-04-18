@@ -1,4 +1,8 @@
 #!/usr/bin/env Rscript
+#Main placebo command (2019):
+#Rscript placebo_att_simulator.R year=2019 B=1000 pre_years=2008,2009,2010,2011,2012,2013,2014,2015,2016,2017,2018 post_years=2020 assignment_mode=control_only n_workers=1 seed_base=20260405 checkpoint_every=100 resume=true gate_prefit_mult=5.0 enforce_ratio_gate=false gate_ratio_max=20.0 donor_placebo_size=1 min_valid_draws=100 out_dir='Embeddings/data/k_selection/2019/placebo'
+
+
 suppressPackageStartupMessages({
   pkgs <- c("data.table", "ggplot2", "dplyr")
   for (p in pkgs) {
@@ -665,9 +669,9 @@ summary_df <- data.frame(
   placebo_sd_post = ifelse(length(placebo_vals) > 0, sd(placebo_vals, na.rm = TRUE), NA),
   placebo_median_post = ifelse(length(placebo_vals) > 0, median(placebo_vals, na.rm = TRUE), NA),
   placebo_iqr_post = ifelse(length(placebo_vals) > 0, IQR(placebo_vals, na.rm = TRUE), NA),
-  placebo_mean_pre_att = ifelse(any(!is.na(placebo_att_pre)), mean(placebo_att_pre, na.rm = TRUE), NA),
-  placebo_median_pre_rmspe = ifelse(any(!is.na(placebo_pre_rmspe)), median(placebo_pre_rmspe, na.rm = TRUE), NA),
-  placebo_median_post_pre_rmspe_ratio = ifelse(any(!is.na(placebo_post_pre_ratio)), median(placebo_post_pre_ratio, na.rm = TRUE), NA),
+  placebo_mean_pre_att = ifelse(any(!is.na(accepted$placebo_att_pre)), mean(accepted$placebo_att_pre, na.rm = TRUE), NA),
+  placebo_median_pre_rmspe = ifelse(any(!is.na(accepted$placebo_pre_rmspe)), median(accepted$placebo_pre_rmspe, na.rm = TRUE), NA),
+  placebo_median_post_pre_rmspe_ratio = ifelse(any(!is.na(accepted$placebo_post_pre_rmspe_ratio)), median(accepted$placebo_post_pre_rmspe_ratio, na.rm = TRUE), NA),
   pval_rank = pval_rank,
   interpretation = ifelse(!is.na(pval_rank), "Is observed ATT extreme under random assignment?", NA),
   stringsAsFactors = FALSE
@@ -689,9 +693,12 @@ if (length(placebo_vals) > 0 && !is.na(obs_att)) {
     theme_minimal()
   ggsave(filename = file.path(out_dir, sprintf("placebo_ecdf_gg_%s.png", year)), plot = p_ecdf, width = 7, height = 5, dpi = 200)
 
+  att_range <- range(dfp$ATT, na.rm = TRUE)
+  span <- ifelse(all(is.finite(att_range)), att_range[2] - att_range[1], NA_real_)
+  binwidth_scale <- ifelse(is.finite(span) && span > 0, span / 30, 1)
   p_hist <- ggplot(dfp, aes(x = ATT)) +
-    geom_histogram(aes(y = ..count..), bins = 30, fill = "grey70", color = "black", alpha = 0.9) +
-    geom_density(aes(y = ..count.. * diff(range(ATT)) / 30), color = "blue", size = 0.8, adjust = 1) +
+    geom_histogram(aes(y = after_stat(count)), bins = 30, fill = "grey70", color = "black", alpha = 0.9) +
+    geom_density(aes(y = after_stat(count) * binwidth_scale), color = "blue", linewidth = 0.8, adjust = 1) +
     geom_vline(xintercept = obs_att, color = "red", size = 0.8) +
     labs(
       title = sprintf("Placebo ATT histogram + density (%s) — valid=%d, p=%.3f", year, sum(valid), pval_rank),

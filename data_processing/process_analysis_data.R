@@ -1,3 +1,6 @@
+#' Process data for covariate balance synthetic control analysis
+#'
+#' Combines active fire, historic fire behaviors, topography, meteorological, disturbance, and vegetation data into a single data frame per exposure year and land type.
 ## process data for the covariate balance synthetic control analysis
 ## combine active fire, historic trajectories on fire behaviors, topography, meteorological,
 ## disturbance, and vegetation data into single df

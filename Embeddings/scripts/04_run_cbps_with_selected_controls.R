@@ -1,3 +1,10 @@
+##
+#' Run CBPS with selected controls
+#'
+#' This script runs the CBPS pipeline using a filtered control pool, saving outputs and metrics for a given year and configuration.
+#' Usage: Rscript 04_run_cbps_with_selected_controls.R <year> <selected_units_csv> <output_prefix> <train_start> <train_end> <test_start> <test_end> [flags]
+#' Flags: --experiment-name, --output-experiment-name, --analysis-base-dir, --output-base-dir, --save-full-weights, --use-cache, --cache-max-items, --embedding-k, --rolling-windows-json
+
 #!/usr/bin/env Rscript
 
 source("balancing/cli_utils.R")
@@ -9,13 +16,36 @@ run_cbps_filtered <- get("run_cbps_filtered", mode = "function")
 save_cbps_filtered_outputs <- get("save_cbps_filtered_outputs", mode = "function")
 
 parse_args <- function() {
+  #' Parse command line arguments for the CBPS run.
   raw_args <- commandArgs(trailingOnly = TRUE)
-  if (length(raw_args) < 7) {
-    stop("Usage: Rscript 04_run_cbps_with_selected_controls.R <year> <selected_units_csv> <output_prefix> <train_start> <train_end> <test_start> <test_end>")
+
+  # Allow flags to be interleaved with positional args.
+  pos_args <- character(0)
+  opt <- character(0)
+  i <- 1
+  while (i <= length(raw_args)) {
+    a <- raw_args[i]
+    if (startsWith(a, "--")) {
+      # flag token; if next token exists and isn't another flag, treat as its value
+      if (i < length(raw_args) && !startsWith(raw_args[i + 1], "--")) {
+        opt <- c(opt, a, raw_args[i + 1])
+        i <- i + 2
+      } else {
+        # boolean flag provided without explicit value -> treat as true
+        opt <- c(opt, a, "true")
+        i <- i + 1
+      }
+    } else {
+      pos_args <- c(pos_args, a)
+      i <- i + 1
+    }
   }
 
-  pos <- raw_args[1:7]
-  opt <- if (length(raw_args) > 7) raw_args[8:length(raw_args)] else character(0)
+  if (length(pos_args) < 7) {
+    stop("Usage: Rscript 04_run_cbps_with_selected_controls.R <year> <selected_units_csv> <output_prefix> <train_start> <train_end> <test_start> <test_end>\nPositional arguments must be supplied; optional flags (e.g. --experiment-name) may appear anywhere.)")
+  }
+
+  pos <- pos_args[1:7]
 
   list(
     treated_year = as.integer(pos[1]),
@@ -38,6 +68,7 @@ parse_args <- function() {
 }
 
 validate_args <- function(args) {
+  #' Validate parsed arguments for logical consistency.
   int_fields <- c("treated_year", "train_start", "train_end", "test_start", "test_end")
   for (nm in int_fields) {
     val <- args[[nm]]
@@ -60,6 +91,7 @@ validate_args <- function(args) {
 }
 
 read_rolling_windows <- function(path) {
+  #' Read rolling windows configuration from a JSON file, if provided.
   if (is.null(path) || !nzchar(path)) return(NULL)
   if (!file.exists(path)) stop(paste("Rolling windows file not found:", path))
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
@@ -72,6 +104,7 @@ read_rolling_windows <- function(path) {
 }
 
 read_selected_units <- function(path) {
+  #' Read selected units from a CSV file and validate required columns.
   if (!file.exists(path)) stop(paste("Selected units file not found:", path))
   selected_units <- read.csv(path, stringsAsFactors = FALSE)
   if (nrow(selected_units) == 0) {
@@ -85,22 +118,23 @@ read_selected_units <- function(path) {
 }
 
 main <- function() {
+  #' Main entry point for running CBPS with selected controls.
   args <- parse_args()
   validate_args(args)
 
-  cat("Running CBPS with filtered control pool\n")
-  cat("Treatment year:", args$treated_year, "\n")
-  cat("Output prefix:", args$output_prefix, "\n")
-  cat("Experiment:", args$experiment_name, "\n")
+  message("Running CBPS with filtered control pool")
+  message("Treatment year: ", args$treated_year)
+  message("Output prefix: ", args$output_prefix)
+  message("Experiment: ", args$experiment_name)
   if (!is.null(args$output_experiment_name) && nzchar(args$output_experiment_name)) {
-    cat("Output namespace:", args$output_experiment_name, "\n")
+    message("Output namespace: ", args$output_experiment_name)
   } else {
-    cat("Output namespace: <none> (flat year directory under Embeddings/data/cbps_integration)\n")
+    message("Output namespace: <none> (flat year directory under Embeddings/data/cbps_integration)")
   }
   if (!is.null(args$rolling_windows_json) && nzchar(args$rolling_windows_json)) {
-    cat("Rolling windows:", args$rolling_windows_json, "\n")
+    message("Rolling windows: ", args$rolling_windows_json)
   }
-  cat("Use cache:", args$use_cache, "(max items:", args$cache_max_items, ")\n")
+  message("Use cache: ", args$use_cache, " (max items: ", args$cache_max_items, ")")
 
   selected_units <- tryCatch(
     read_selected_units(args$selected_units_path),
@@ -156,15 +190,37 @@ main <- function() {
     }
   )
 
-  cat("Saved metrics:", saved$metrics_path, "\n")
+  # --- Additional: Save RDS weights to experiment-specific subfolder ---
+  weights_csv <- saved$weights_path
+  year <- args$treated_year
+  exp_name <- args$experiment_name
+  rds_dir <- file.path("data/processed_data/rev_analysis_low", exp_name)
+  dir.create(rds_dir, recursive = TRUE, showWarnings = FALSE)
+  rds_path <- file.path(rds_dir, sprintf("cbps_weights_%s_conifer.RDS", year))
+  w <- tryCatch(read.csv(weights_csv, stringsAsFactors=FALSE), error=function(e) NULL)
+  if (!is.null(w)) {
+    saveRDS(w, rds_path)
+    message("Saved experiment weights RDS: ", rds_path)
+  } else {
+    message("WARNING: Could not read weights CSV for RDS export")
+  }
+
+  # Optionally, only save to top-level if experiment_name is 'full_pool' and user sets an explicit flag
+  if (!is.null(exp_name) && exp_name == "full_pool" && !is.null(Sys.getenv("CBPS_OVERWRITE_TOPLEVEL", unset=NA))) {
+    top_rds <- file.path("data/processed_data/rev_analysis_low", sprintf("cbps_weights_%s_conifer.RDS", year))
+    saveRDS(w, top_rds)
+    message("(Explicit) Overwrote top-level weights RDS: ", top_rds)
+  }
+
+  message("Saved metrics: ", saved$metrics_path)
   if (!is.null(saved$window_metrics_path) && !is.na(saved$window_metrics_path)) {
-    cat("Saved window metrics:", saved$window_metrics_path, "\n")
+    message("Saved window metrics: ", saved$window_metrics_path)
   }
-  cat("Saved weights:", saved$weights_path, "\n")
+  message("Saved weights: ", saved$weights_path)
   if (!is.na(saved$weights_full_path)) {
-    cat("Saved full weights:", saved$weights_full_path, "\n")
+    message("Saved full weights: ", saved$weights_full_path)
   }
-  cat("CBPS filtered run completed successfully\n")
+  message("CBPS filtered run completed successfully")
 }
 
 if (identical(environment(), globalenv())) {
@@ -180,24 +236,24 @@ if (identical(environment(), globalenv())) {
           msg <- "<empty error message>"
         }
       }
-      cat("FATAL:", msg, "\n")
+      message("FATAL: ", msg)
 
       calls <- sys.calls()
       if (length(calls) > 0) {
-        cat("Call stack (most recent last):\n")
+        message("Call stack (most recent last):")
         start_idx <- max(1, length(calls) - 8)
         for (i in seq.int(start_idx, length(calls))) {
-          cat("  [", i, "] ", deparse(calls[[i]], nlines = 1), "\n", sep = "")
+          message("  [", i, "] ", deparse(calls[[i]], nlines = 1))
         }
       }
 
       tb <- capture.output(traceback(2))
       if (length(tb) > 0) {
-        cat("Traceback:\n")
-        cat(paste(tb, collapse = "\n"), "\n")
+        message("Traceback:")
+        message(paste(tb, collapse = "\n"))
       }
 
-      cat("Condition class:", paste(class(e), collapse = ","), "\n")
+      message("Condition class: ", paste(class(e), collapse = ","))
       quit(status = 2)
     }
   )

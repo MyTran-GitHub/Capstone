@@ -70,8 +70,8 @@ def load_lambda_hard_gates(config_path: str = "balancing/balancing_config.R") ->
         "max_smd": 0.10,
         "top10_share": 0.70,
         "max_weight": 0.10,
-        "ess_frac": 0.02,
-        "ess_mult_treated": 1.5,
+        "ess_frac": None,  # disable fraction threshold
+        "ess_mult_treated": 1.0,  # relax to 1 * n_treated
     }
     cmd = [
         "Rscript",
@@ -151,6 +151,19 @@ Examples:
         type=int,
         default=10,
         help='Minimum control:treated ratio (default: 10)'
+    )
+    parser.add_argument(
+        '--max-control-ratio',
+        type=float,
+        default=20.0,
+        help='Maximum control:treated ratio for admissible effective pools (default: 20.0)'
+    )
+    parser.add_argument(
+        '--phase2-policy',
+        type=str,
+        choices=['pool_then_k', 'k_then_pool'],
+        default='pool_then_k',
+        help='Final tie-break policy inside RMSE plateau (default: pool_then_k)'
     )
     parser.add_argument(
         '--force-recompute',
@@ -278,8 +291,20 @@ Examples:
     parser.add_argument(
         '--random-baseline-reps',
         type=int,
-        default=20,
-        help='Run random donor-pool benchmark with N replicates per pool size (default: 20)'
+        default=50,
+        help='Run random donor-pool benchmark with N replicates per pool size (default: 0 to avoid per-replicate artifact explosion)'
+    )
+    parser.add_argument(
+        '--random-baseline-mode',
+        type=str,
+        choices=['pool', 'per_treated'],
+        default='pool',
+        help='How to build random baseline pools: "pool" samples a uniform random pool of matching size; "per_treated" samples K random controls per treated and unions them (mirrors embedding K union)'
+    )
+    parser.add_argument(
+        '--keep-per-k-artifacts',
+        action='store_true',
+        help='Keep per-K/per-replicate cbps_* files in cbps_integration (default: off; centralized outputs only)'
     )
     parser.add_argument(
         '--placebo-draws',
@@ -434,6 +459,8 @@ Examples:
             K_candidates,
             year=year,
             min_ratio=min_ratio,
+            max_control_ratio=float(args.max_control_ratio),
+            phase2_policy=str(args.phase2_policy),
             force_recompute=args.force_recompute,
             max_workers=args.max_workers,
             output_tag=args.output_tag,
@@ -444,14 +471,18 @@ Examples:
             rolling_windows=rolling_windows,
             random_baseline_reps=max(0, int(args.random_baseline_reps)),
             random_seed=args.random_seed,
+            random_mode=str(args.random_baseline_mode),
             train_years=train_years,
             test_years=test_years,
+            keep_per_k_artifacts=bool(args.keep_per_k_artifacts),
         )
         if results is None:
             return 1
 
         if args.stage == 'evaluate':
-            logger.info("Stage 'evaluate' complete: K evaluations are cached in cbps_integration outputs.")
+            logger.info("Stage 'evaluate' complete: K evaluations finished.")
+            if not bool(args.keep_per_k_artifacts):
+                logger.info("Per-K artifacts were cleaned; see centralized outputs under Embeddings/data/k_selection/<year>/.")
             logger.info("Run with --stage select to materialize selection artifacts.")
             return 0
         if args.stage == 'export':

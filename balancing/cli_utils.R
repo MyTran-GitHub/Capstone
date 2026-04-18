@@ -1,3 +1,6 @@
+#' Shared CLI parsing helpers for balancing scripts.
+#'
+#' Provides functions for parsing command-line flags, boolean and integer arguments, and resolving experiment directories.
 ## Shared CLI parsing helpers for balancing scripts.
 
 parse_flag_value <- function(args, flag, default = NULL) {

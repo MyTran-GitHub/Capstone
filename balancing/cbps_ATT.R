@@ -17,7 +17,22 @@
 #   weights.1: IPW weights for treated
 #   convergence: optim's convergence status. 0=success.
 #   balance condition: the LHS and RHS of the balance condition.
+#' Covariate Balancing / Calibrated Propensity Score
+#'
+#' This script implements ATT covariate balancing using Base R's optim, following Wu et al. (2023) and related literature.
+#' Input: X (covariate matrix), W (treatment vector), and options for intercept, starting values, optimizer, and penalty.
+#' Output: Estimated weights and diagnostics for ATT balancing.
+
 cbps_att = function(X, W, intercept = TRUE, theta.init = NULL, method = "BFGS", control = list(), lambda = NULL) {
+  #' Fit ATT covariate balancing weights using calibration loss.
+  #' @param X Numeric covariate matrix.
+  #' @param W Binary treatment assignment vector.
+  #' @param intercept Whether to include intercept in logistic model.
+  #' @param theta.init Optional starting values for theta.
+  #' @param method Optimizer method for optim.
+  #' @param control Control list for optim.
+  #' @param lambda Optional ridge penalty vector.
+  #' @return List with estimated thetas, weights, convergence status, and balance diagnostics.
   if (!all(W %in% c(0, 1))) {
     stop("W should be a binary vector.")
   }

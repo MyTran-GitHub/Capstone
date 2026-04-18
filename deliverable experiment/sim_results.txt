@@ -1,8 +1,0 @@
-ATT Baseline: -0.256 (95% CI: -0.342, -0.183)
-ATT Embedding: -0.239 (95% CI: -0.316, -0.156)
-Placebo-based CI for Embedding ATT: (-0.215, -0.110)
-Correlation (embedding-pre outcome similarity): 0.02
-R2 for predicting elevation from embeddings: 0.86
-R2 for predicting canopy from embeddings: 0.87
-R2 for predicting precip from embeddings: 0.86
-Wilcoxon p-value for RMSPE (baseline vs embedding): 0.0000
