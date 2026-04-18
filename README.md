@@ -30,7 +30,7 @@ We use a synthetic control approach to analyze twenty years of satellite-based f
 3. **Edit configuration**
    - Set all parameters in `config/config.yaml`
 4. **Run the pipeline**
-   - Use `main_orchestration.R` for end-to-end execution
+   - Use `main.R` for end-to-end execution
 
 ## Pipeline Workflow
 1. Data preparation (`data_processing/`)
@@ -68,7 +68,7 @@ Rscript Embeddings/scripts/04_run_cbps_with_selected_controls.R <year> <selected
 ```
 Or run the full pipeline with:
 ```sh
-Rscript main_orchestration.R
+Rscript main.R
 ```
 
 ## Citing This Work
