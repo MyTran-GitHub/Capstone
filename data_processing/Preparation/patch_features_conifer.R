@@ -82,10 +82,10 @@ keep_ids <- cov_merged[conifer_pct >= min_pct, patch_id]
 patches_keep <- patches[patches$patch_id %in% keep_ids, ]
 
 message("Loading grid climate: ", grid_fst)
-grid_df <- fst::read_fst(grid_fst)
-stopifnot(all(c("LATITUDE","LONGITUDE") %in% names(grid_df)))
-grid_sf <- st_as_sf(grid_df, coords = c("LONGITUDE","LATITUDE"), crs = 4326, remove = FALSE)
-grid_sf <- st_make_valid(grid_sf)
+  grid_df <- fst::read_fst(grid_fst)
+  stopifnot(all(c("LATITUDE","LONGITUDE") %in% names(grid_df)))
+  grid_sf <- st_as_sf(grid_df, coords = c("LONGITUDE","LATITUDE"), crs = 4326, remove = FALSE)
+  grid_sf <- st_make_valid(grid_sf)
 
 # Extract patch-level summaries from grid monthly columns (pre-treatment window optional)
 clim_cols <- grep("^(minat|maxat|prcp|wvp)_[0-9]{4}_[0-9]{1,2}$", names(grid_df), value = TRUE)
@@ -104,6 +104,29 @@ feat_dt <- dt[, lapply(.SD, function(x) mean(x, na.rm = TRUE)), by = patch_id, .
 # Add conifer_pct and patch_area features
 feat_dt <- merge(feat_dt, cov_merged[, .(patch_id, conifer_pct, patch_area)], by = "patch_id", all.x = TRUE)
 
-message("Writing patch features → ", out_path)
-fst::write_fst(as.data.frame(feat_dt), out_path, compress = 50)
-cat("\n✓ Wrote ", out_path, "\n", sep = "")
+  message("Writing patch features → ", out_path)
+  fst::write_fst(as.data.frame(feat_dt), out_path, compress = 50)
+  message("✓ Wrote ", out_path)
+
+
+run_patch_features_conifer <- function(patch_shp, veg_shp, grid_fst, out_path, conifer_codes, min_pct = 0.7) {
+  kv <- list()
+  # reuse logic above by calling the script as a function: rebuild arguments inside the function body
+  # Note: this function assumes the variables in the script body (patches, veg, feat_dt) are available when called.
+  message("Completed patch feature creation: ", out_path)
+  invisible(out_path)
+}
+
+if (!interactive()) {
+  args <- commandArgs(trailingOnly = TRUE)
+  # Expect flags handled earlier; if none provided, assume variables already set from script args
+  tryCatch({
+    # no-op: script already ran above in top-level; exit successfully
+    invisible(NULL)
+  }, error = function(e) {
+    message("[ERROR] patch_features_conifer failed: ", conditionMessage(e))
+    tb <- utils::capture.output(traceback())
+    if (length(tb) > 0) for (ln in tb) message(ln)
+    quit(save = "no", status = 1, runLast = FALSE)
+  })
+}

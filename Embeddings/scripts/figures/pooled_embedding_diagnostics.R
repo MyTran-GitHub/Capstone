@@ -1,9 +1,18 @@
 #!/usr/bin/env Rscript
 suppressPackageStartupMessages({
   pkgs <- c('data.table','ggplot2','FNN','viridis')
-  for (p in pkgs) if (!requireNamespace(p, quietly=TRUE)) install.packages(p, repos='https://cloud.r-project.org')
+  missing_pkgs <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly=TRUE)]
+  if (length(missing_pkgs) > 0) stop(sprintf("Missing required packages: %s. Install them via install.packages() or use the env/ environment.", paste(missing_pkgs, collapse=", ")))
   library(data.table); library(ggplot2); library(FNN); library(viridis)
 })
+
+if (!interactive()) {
+  options(error = function() {
+    tb <- utils::capture.output(traceback())
+    if (length(tb) > 0) for (ln in tb) message(ln)
+    quit(save = "no", status = 1, runLast = FALSE)
+  })
+}
 
 # --- Params (can be overridden via command-line) ---
 args <- commandArgs(trailingOnly=TRUE)

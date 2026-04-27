@@ -2,9 +2,17 @@
 # Plot UMAP of embeddings: treated vs all controls, and treated vs selected donors
 suppressPackageStartupMessages({
   pkgs <- c('data.table','uwot','ggplot2')
-  for (p in pkgs) if (!requireNamespace(p, quietly=TRUE)) install.packages(p, repos='https://cloud.r-project.org')
+  missing_pkgs <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly=TRUE)]
+  if (length(missing_pkgs) > 0) stop(sprintf("Missing required packages: %s. Install them via install.packages() or use the env/ environment.", paste(missing_pkgs, collapse=", ")))
   library(data.table); library(uwot); library(ggplot2)
 })
+if (!interactive()) {
+  options(error = function() {
+    tb <- utils::capture.output(traceback())
+    if (length(tb) > 0) for (ln in tb) message(ln)
+    quit(save = "no", status = 1, runLast = FALSE)
+  })
+}
 
 emb_f <- 'Embeddings/data/embeddings/embeddings_2019.csv'
 sel_k10 <- 'Embeddings/data/cbps_integration/2019/selected_controls_k10_2019.csv'

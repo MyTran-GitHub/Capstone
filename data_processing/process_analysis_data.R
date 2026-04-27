@@ -5,13 +5,16 @@
 ## combine active fire, historic trajectories on fire behaviors, topography, meteorological,
 ## disturbance, and vegetation data into single df
 ## the df is per exposure year (2008-2020) per land type ("conifer", "hardwood")
-print(Sys.time())
-rm(list = ls())
 library("sf")
 library("tidyverse")
 library("mltools")
 library("data.table")
 library("fst")
+
+run_process_analysis_data <- function(outDir = "data/processed_data/") {
+  "Process data for the covariate balance synthetic control analysis."
+
+  message(Sys.time(), " - Starting process_analysis_data")
 
 
 # Optimized: Only use available/required layers (tree_cover.fst, gridClimate_mon2_conifer.fst, fire_brightness_frp_conifer.fst, fveg_elev_grid_ca_poly.RDS, FIRMS.RDS)
@@ -151,4 +154,21 @@ for (treated.year in parameters$year) {
   df <- subset(df, !(unit %in% subset(fire.df, has.hifire == 1)$unit))
 
   saveRDS(df, file = file.path(outDir, "rev_analysis_low", paste0("analysis_treated", treated.year, "_conifer.RDS")))
+}
+  message(Sys.time(), " - process_analysis_data complete")
+  invisible(TRUE)
+}
+
+# If executed directly, run and surface errors
+if (!interactive()) {
+  tryCatch(
+    {
+      run_process_analysis_data()
+    },
+    error = function(e) {
+      message("[ERROR] process_analysis_data failed: ", conditionMessage(e))
+      try({ tb <- utils::capture.output(traceback()); if (length(tb)>0) for (ln in tb) message(ln) }, silent = TRUE)
+      quit(save = "no", status = 1, runLast = FALSE)
+    }
+  )
 }

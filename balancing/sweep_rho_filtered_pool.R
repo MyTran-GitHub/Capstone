@@ -9,6 +9,14 @@ suppressPackageStartupMessages({
   library(dplyr)
 })
 
+if (!interactive()) {
+    options(error = function() {
+        tb <- utils::capture.output(traceback())
+        if (length(tb) > 0) for (ln in tb) message(ln)
+        quit(save = "no", status = 1, runLast = FALSE)
+    })
+}
+
 source("balancing/cbps_ATT.R")    # must exist
 # Load and prepare filtered pool (same transforms as run_cbps... simplified)
 df <- readRDS(sprintf("data/processed_data/rev_analysis_low/analysis_treated%d_conifer.RDS", year))
@@ -54,7 +62,7 @@ if (!is.na(max_controls) && n_ctrl_total > max_controls) {
         probs <- prob_df$weight
         # handle missing/zero weights
         if (all(is.na(probs) | probs <= 0)) {
-            cat("⚠ WARNING: no positive weights found for prob sampling; falling back to uniform random sampling\n")
+            message("⚠ WARNING: no positive weights found for prob sampling; falling back to uniform random sampling")
             keep_ctrl <- sample(ctrl_units, max_controls)
         } else {
             probs[is.na(probs) | probs < 0] <- 0
@@ -62,16 +70,16 @@ if (!is.na(max_controls) && n_ctrl_total > max_controls) {
             probs <- probs + .Machine$double.eps
             probs <- probs / sum(probs)
             keep_ctrl <- sample(ctrl_units, max_controls, prob = probs)
-            cat("⚙ Prob-weighted sampling using provided weights\n")
+            message("⚙ Prob-weighted sampling using provided weights")
         }
     } else {
         keep_ctrl <- sample(ctrl_units, max_controls)
         if (sampling_method == "prob" && is.null(sel_weights_df)) {
-            cat("⚠ WARNING: requested prob sampling but no weights found in selector; used uniform random instead\n")
+            message("⚠ WARNING: requested prob sampling but no weights found in selector; used uniform random instead")
         }
     }
     df_filtered <- df_filtered %>% filter(treated == 1 | unit %in% keep_ctrl)
-    cat("⚠ NOTE: Sampled", max_controls, "controls from", n_ctrl_total, "for memory-limited sweep\n")
+    message("⚠ NOTE: Sampled", max_controls, "controls from", n_ctrl_total, "for memory-limited sweep")
 }
 
 W <- df_filtered$treated
@@ -113,11 +121,11 @@ for (col in swe_cols) {
 
 if (length(cols_to_remove) > 0) {
     X <- X[, !colnames(X) %in% cols_to_remove]
-    cat("  Removed", length(cols_to_remove), "sparse SWE columns (>95% zero)\n")
+    message("  Removed", length(cols_to_remove), "sparse SWE columns (>95% zero)")
 }
 
 if (cols_converted > 0) {
-    cat("  SWE two-part: converted", cols_converted, "columns (presence + log-intensity)\n")
+    message("  SWE two-part: converted", cols_converted, "columns (presence + log-intensity)")
 }
 }
 
@@ -136,7 +144,7 @@ for (col in frp_cols) {
     }
     X[[col]] <- x
 }
-cat("  Log+winsorized", length(frp_cols), "max_FRP columns (99.5%)\n")
+message("  Log+winsorized", length(frp_cols), "max_FRP columns (99.5%)")
 }
 
 # Log1p + winsorize prcp_* and avg_BRIGHTNESS_* to tame heavy tails
@@ -151,7 +159,7 @@ for (col in prcp_cols) {
     if (!is.na(p995)) x[x > p995] <- p995
     X[[col]] <- x
 }
-if (length(prcp_cols) > 0) cat("  Log+winsorized", length(prcp_cols), "prcp columns (99.5%)\n")
+if (length(prcp_cols) > 0) message("  Log+winsorized", length(prcp_cols), "prcp columns (99.5%)")
 
 # add explicit prcp variants: _tr (transformed), _rnk (rank 0-1), _q4 (quartile)
 if (length(prcp_cols) > 0) {
@@ -198,9 +206,9 @@ if (length(bright_cols) > 0) {
     }
     if (length(cols_removed) > 0) {
         X <- X[, !colnames(X) %in% cols_removed]
-        cat("  Removed", length(cols_removed), "extremely sparse avg_BRIGHTNESS columns\n")
+        message("  Removed", length(cols_removed), "extremely sparse avg_BRIGHTNESS columns")
     }
-    if (cols_converted > 0) cat("  avg_BRIGHTNESS two-part: converted", cols_converted, "columns (presence + log-intensity)\n")
+    if (cols_converted > 0) message("  avg_BRIGHTNESS two-part: converted", cols_converted, "columns (presence + log-intensity)")
 }
 
 # Drop extremely sparse fire_* columns to avoid huge z-scores from rare events
@@ -249,13 +257,13 @@ if (length(fire_cols) > 0) {
         X <- X[, !colnames(X) %in% fire_cols, drop = FALSE]
         X[['fire_any_present']] <- as.numeric(any_present_vec > 0)
         X[['fire_n_years_present']] <- as.numeric(n_years_present_vec)
-        cat('  Replaced yearly fire_* with aggregate fire_any_present and fire_n_years_present\n')
+        message('  Replaced yearly fire_* with aggregate fire_any_present and fire_n_years_present')
     } else {
         if (length(sparse_fire) > 0) {
             X <- X[, !colnames(X) %in% sparse_fire]
-            cat('  Dropped', length(sparse_fire), 'sparse fire_* columns (<0.5% ones)\n')
+            message('  Dropped', length(sparse_fire), 'sparse fire_* columns (<0.5% ones)')
         }
-        if (cols_converted > 0) cat('  fire two-part: converted', cols_converted, 'columns (presence + log-intensity)\n')
+        if (cols_converted > 0) message('  fire two-part: converted', cols_converted, 'columns (presence + log-intensity)')
     }
 }
   
@@ -272,7 +280,7 @@ near_constant_threshold <- 1e-10
 keep_variance <- X_var_original >= near_constant_threshold
 n_removed <- sum(!keep_variance)
 if (n_removed > 0) {
-    cat("  Removed", n_removed, "near-constant covariates (var <", near_constant_threshold, ")\n")
+    message("  Removed", n_removed, "near-constant covariates (var <", near_constant_threshold, ")")
     X_scl <- X_scl[, keep_variance, drop = FALSE]
 }
 
@@ -281,17 +289,17 @@ n_control <- sum(W == 0)
 obs_per_cov <- if (ncol(X_scl) > 0) n_control / ncol(X_scl) else 0
 
 if (obs_per_cov < 10) {
-    cat("Using STRONG regularization grid (obs:cov =", round(obs_per_cov,1), ")\n")
+    message("Using STRONG regularization grid (obs:cov =", round(obs_per_cov,1), ")")
     rho_exps <- -4:5
 } else {
-    cat("Using STANDARD regularization grid (obs:cov =", round(obs_per_cov,1), ")\n")
+    message("Using STANDARD regularization grid (obs:cov =", round(obs_per_cov,1), ")")
     rho_exps <- -6:1
 }
 rho_vals <- unique(10^rho_exps)
 
 results <- list()
 for (rho in rho_vals) {
-  cat("Trying rho =", rho, "...\n")
+    message("Trying rho =", rho, "...")
   res_try <- tryCatch({
     res <- cbps_att(as.matrix(X_scl),
                     W,
@@ -334,4 +342,4 @@ for (rho in rho_vals) {
 df_res <- do.call(rbind, results)
 write.csv(df_res, out_csv, row.names = FALSE)
 print(df_res)
-cat("Saved sweep results to", out_csv, "\n")
+message("Saved sweep results to", out_csv)

@@ -8,6 +8,14 @@ search_root <- if (length(args) >= 1) args[[1]] else file.path("Embeddings", "da
 # optional: output dir
 out_dir <- if (length(args) >= 2) args[[2]] else file.path("Embeddings", "data", "pj_results")
 
+if (!interactive()) {
+  options(error = function() {
+    tb <- utils::capture.output(traceback())
+    if (length(tb) > 0) for (ln in tb) message(ln)
+    quit(save = "no", status = 1, runLast = FALSE)
+  })
+}
+
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # windows to evaluate (matches analysis/fire_regression_lag.R)

@@ -34,11 +34,18 @@ suppressPackageStartupMessages({
   library("ggplot2")
   library("data.table")
 })
-if (!requireNamespace("lmtest", quietly = TRUE)) {
-  install.packages("lmtest", repos = "https://cloud.r-project.org/")
+if (!interactive()) {
+  options(error = function() {
+    tb <- utils::capture.output(traceback())
+    if (length(tb) > 0) for (ln in tb) message(ln)
+    quit(save = "no", status = 1, runLast = FALSE)
+  })
 }
-if (!requireNamespace("sandwich", quietly = TRUE)) {
-  install.packages("sandwich", repos = "https://cloud.r-project.org/")
+missing_pkgs <- c()
+if (!requireNamespace("lmtest", quietly = TRUE)) missing_pkgs <- c(missing_pkgs, "lmtest")
+if (!requireNamespace("sandwich", quietly = TRUE)) missing_pkgs <- c(missing_pkgs, "sandwich")
+if (length(missing_pkgs) > 0) {
+  stop_with_error("Missing required packages: %s. Install them via install.packages() or use the provided env/ environment.", paste(missing_pkgs, collapse = ", "))
 }
 
 

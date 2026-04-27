@@ -1,8 +1,7 @@
 # Sensitivity analysis that uses fire severity rather than fire intensity as the fire classification scheme
 # create weighted synthetic controls using covariate balance weights.
 
-print(Sys.time())
-rm(list = ls())
+message(Sys.time())
 library("sf")
 library("fst")
 library("tidyverse")
@@ -12,7 +11,7 @@ library(grid)
 library(pBrackets) 
 library(gridExtra)
 
-outDir = "../data/processed_data/"
+run_weighted_outcome_mtbs <- function(outDir = "../data/processed_data/") {
 
 # By lagged
 parameters <- expand.grid(c("conifer", "hardwood"), c(1:9))
@@ -140,4 +139,21 @@ for (index in 1:nrow(parameters)) {
   
   write.csv(rate, file = file.path(outDir, "mtbs_result_low",
                                    paste0(parameters[index,1], "_lag", parameters[index,2], ".csv")))
+}
+
+  invisible(TRUE)
+}
+
+# If executed directly, run and surface errors
+if (!interactive()) {
+  tryCatch(
+    {
+      run_weighted_outcome_mtbs()
+    },
+    error = function(e) {
+      message("[ERROR] weighted_outcome_mtbs failed: ", conditionMessage(e))
+      try({ tb <- utils::capture.output(traceback()); if (length(tb)>0) for (ln in tb) message(ln) }, silent = TRUE)
+      quit(save = "no", status = 1, runLast = FALSE)
+    }
+  )
 }

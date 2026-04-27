@@ -1,5 +1,4 @@
-print(Sys.time())
-rm(list = ls())
+message(Sys.time())
 library(fst)
 library("sf")
 library("tidyverse")
@@ -16,7 +15,7 @@ options(tigris_use_cache = TRUE)
 
 args <- commandArgs(trailingOnly = TRUE)
 EXPERIMENT_NAME <- if (length(args) >= 1 && nzchar(args[1])) args[1] else "full_pool"
-cat("Using experiment:", EXPERIMENT_NAME, "\n")
+message("Using experiment: ", EXPERIMENT_NAME)
 
 RUN_BALANCE_PLOTS <- TRUE
 RUN_EVALUES <- TRUE
@@ -507,4 +506,4 @@ for (start_year in start_years) {
 } else { cat("\nSkipping E-values (RUN_EVALUES=FALSE)\n") }
 
 cat("\n=== Figures.R completed ===")
-print(Sys.time())
+message(Sys.time())

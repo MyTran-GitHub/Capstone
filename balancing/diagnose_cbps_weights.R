@@ -201,7 +201,7 @@ check_extreme_values <- function(values, covariate_name) {
 apply_transformations <- function(X) {
   # Apply same transformations as implement_cbps.R and run_cbps_with_selected_controls.R
   
-  cat("\nApplying transformations...\n")
+  message("Applying transformations...")
   
   # Track transformations
   transform_log <- list()
@@ -237,12 +237,12 @@ apply_transformations <- function(X) {
     
     if (length(cols_to_remove) > 0) {
       X <- X[, !colnames(X) %in% cols_to_remove]
-      cat("  SWE: Removed", length(cols_to_remove), "sparse columns (>95% zero)\n")
+      message("  SWE: Removed ", length(cols_to_remove), " sparse columns (>95% zero)")
       transform_log$swe_removed <- length(cols_to_remove)
     }
     
     if (cols_converted > 0) {
-      cat("  SWE: Two-part transformation on", cols_converted, "columns\n")
+      message("  SWE: Two-part transformation on ", cols_converted, " columns")
       transform_log$swe_converted <- cols_converted
     }
   }
@@ -261,7 +261,7 @@ apply_transformations <- function(X) {
       }
       X[[col]] <- x
     }
-    cat("  FRP: Log+winsorized", length(frp_cols), "columns (99.5%)\n")
+    message("  FRP: Log+winsorized ", length(frp_cols), " columns (99.5%)")
     transform_log$frp_transformed <- length(frp_cols)
   }
   
@@ -280,8 +280,8 @@ apply_transformations <- function(X) {
     X[[col]] <- x
   }
   if (length(prcp_cols) + length(bright_cols) > 0) {
-    cat("  Other: Log+winsorized", length(prcp_cols), "prcp and",
-        length(bright_cols), "BRIGHTNESS columns\n")
+    message("  Other: Log+winsorized ", length(prcp_cols), " prcp and ",
+            length(bright_cols), " BRIGHTNESS columns")
     transform_log$other_transformed <- length(prcp_cols) + length(bright_cols)
   }
   
@@ -297,7 +297,7 @@ apply_transformations <- function(X) {
     }
     if (length(sparse_fire) > 0) {
       X <- X[, !colnames(X) %in% sparse_fire]
-      cat("  Fire: Dropped", length(sparse_fire), "sparse columns (<0.5% ones)\n")
+      message("  Fire: Dropped ", length(sparse_fire), " sparse columns (<0.5% ones)")
       transform_log$fire_dropped <- length(sparse_fire)
     }
   }
@@ -311,9 +311,9 @@ apply_transformations <- function(X) {
 
 diagnose_cbps_data <- function(year, selected_units_path = NULL) {
   
-  cat("============================================================\n")
-  cat("CBPS WEIGHT DIAGNOSTIC FOR YEAR", year, "\n")
-  cat("============================================================\n\n")
+  message("============================================================")
+  message("CBPS WEIGHT DIAGNOSTIC FOR YEAR ", year)
+  message("============================================================")
   
   # Load full dataset
   outDir <- "data/processed_data/rev_analysis_low/"
@@ -325,10 +325,10 @@ diagnose_cbps_data <- function(year, selected_units_path = NULL) {
   
   df_full <- readRDS(input_file)
   
-  cat("Dataset loaded:\n")
-  cat("  Total pixels:", nrow(df_full), "\n")
-  cat("  Treated:", sum(df_full$treated), "\n")
-  cat("  Control:", sum(df_full$treated == 0), "\n\n")
+  message("Dataset loaded:")
+  message("  Total pixels: ", nrow(df_full))
+  message("  Treated: ", sum(df_full$treated))
+  message("  Control: ", sum(df_full$treated == 0))
   
   # Create comparison datasets
   datasets <- list()
@@ -358,10 +358,10 @@ diagnose_cbps_data <- function(year, selected_units_path = NULL) {
         n_control = sum(df_embedding$treated == 0)
       )
       
-      cat("Loaded embedding-selected controls:", nrow(selected_units), "\n")
-      cat("  After filtering:", sum(df_embedding$treated == 0), "controls\n\n")
+      message("Loaded embedding-selected controls: ", nrow(selected_units))
+      message("  After filtering: ", sum(df_embedding$treated == 0), " controls")
     } else {
-      cat("WARNING: Selected units file not found, analyzing baseline only\n\n")
+      message("WARNING: Selected units file not found, analyzing baseline only")
     }
   }
   
@@ -369,17 +369,16 @@ diagnose_cbps_data <- function(year, selected_units_path = NULL) {
   # ANALYSIS 1: Pre-transformation covariate balance
   # ============================================================================
   
-  cat("\n")
-  cat("============================================================\n")
-  cat("ANALYSIS 1: PRE-TRANSFORMATION COVARIATE BALANCE\n")
-  cat("============================================================\n\n")
-  
+  message("\n")
+  message("============================================================")
+  message("ANALYSIS 1: PRE-TRANSFORMATION COVARIATE BALANCE")
+  message("============================================================")
+
   # Get covariate columns (before transformations)
-  covariate_cols <- setdiff(names(df_full), 
-                            c("unit", "LATITUDE", "LONGITUDE", "treated", "num.fire"))
+  covariate_cols <- setdiff(names(df_full), c("unit", "LATITUDE", "LONGITUDE", "treated", "num.fire"))
   covariate_cols <- covariate_cols[sapply(df_full[covariate_cols], is.numeric)]
-  
-  cat("Analyzing", length(covariate_cols), "numeric covariates\n\n")
+
+  message("Analyzing ", length(covariate_cols), " numeric covariates")
   
   # Compute balance for each dataset
   balance_results <- list()
@@ -705,14 +704,14 @@ diagnose_cbps_data <- function(year, selected_units_path = NULL) {
   for (ds_name in names(balance_results)) {
     output_file <- file.path(output_dir, sprintf("diagnosis_%s_pretransform_%d.csv", ds_name, year))
     write.csv(balance_results[[ds_name]], output_file, row.names = FALSE)
-    cat("  Saved:", output_file, "\n")
+      message("  Saved: ", output_file)
   }
   
   # Save post-transformation balance
   for (ds_name in names(post_transform_results)) {
     output_file <- file.path(output_dir, sprintf("diagnosis_%s_posttransform_%d.csv", ds_name, year))
     write.csv(post_transform_results[[ds_name]], output_file, row.names = FALSE)
-    cat("  Saved:", output_file, "\n")
+    message("  Saved: ", output_file)
   }
   
   # Save comparison if available
@@ -720,7 +719,7 @@ diagnose_cbps_data <- function(year, selected_units_path = NULL) {
     write.csv(comparison, 
               file.path(output_dir, sprintf("diagnosis_comparison_%d.csv", year)),
               row.names = FALSE)
-    cat("  Saved: diagnosis_comparison_", year, ".csv\n", sep = "")
+    message("  Saved: diagnosis_comparison_", year, ".csv", sep = "")
   }
   
   cat("\n✓ Diagnostic complete!\n\n")
@@ -730,24 +729,31 @@ diagnose_cbps_data <- function(year, selected_units_path = NULL) {
 # COMMAND-LINE INTERFACE
 # ============================================================================
 
-args <- commandArgs(trailingOnly = TRUE)
+if (!interactive()) {
+  args <- commandArgs(trailingOnly = TRUE)
+  if (length(args) < 1) {
+    message("Usage: Rscript diagnose_cbps_weights.R <year> [selected_units_csv]\n")
+    message("Arguments:")
+    message("  year               : Treatment year (e.g., 2019)")
+    message("  selected_units_csv : Path to embedding-selected controls (optional)")
+    message("Examples:")
+    message("  Rscript diagnose_cbps_weights.R 2019")
+    message("  Rscript diagnose_cbps_weights.R 2019 Embeddings/data/cbps_integration/2019/selected_controls_k20_2019.csv")
+    quit(status = 1)
+  }
 
-if (length(args) < 1) {
-  cat("Usage: Rscript diagnose_cbps_weights.R <year> [selected_units_csv]\n\n")
-  cat("Arguments:\n")
-  cat("  year               : Treatment year (e.g., 2019)\n")
-  cat("  selected_units_csv : Path to embedding-selected controls (optional)\n\n")
-  cat("Examples:\n")
-  cat("  Rscript diagnose_cbps_weights.R 2019\n")
-  cat("  Rscript diagnose_cbps_weights.R 2019 Embeddings/data/cbps_integration/2019/selected_controls_k20_2019.csv\n\n")
-  quit(status = 1)
+  parsed_years <- parse_years_list(args[1], "positional <year>")
+  if (length(parsed_years) != 1) stop("Please provide exactly one treatment year as the first positional argument")
+  year <- parsed_years[1]
+  selected_units_path <- if (length(args) >= 2 && nzchar(args[2])) args[2] else NULL
+
+  tryCatch(
+    {
+      diagnose_cbps_data(year, selected_units_path)
+    },
+    error = function(e) {
+      message("[ERROR] diagnose_cbps_weights failed: ", conditionMessage(e))
+      quit(save = "no", status = 1, runLast = FALSE)
+    }
+  )
 }
-
-parsed_years <- parse_years_list(args[1], "positional <year>")
-if (length(parsed_years) != 1) {
-  stop("Please provide exactly one treatment year as the first positional argument")
-}
-year <- parsed_years[1]
-selected_units_path <- if (length(args) >= 2 && nzchar(args[2])) args[2] else NULL
-
-diagnose_cbps_data(year, selected_units_path)

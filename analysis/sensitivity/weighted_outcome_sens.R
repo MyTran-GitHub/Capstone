@@ -2,8 +2,7 @@
 
 # create weighted synthetic controls using covariate balance weights.
 
-print(Sys.time())
-rm(list = ls())
+message(Sys.time())
 library("sf")
 library("tidyverse")
 library("parallel")

@@ -1,8 +1,7 @@
 # Sensitivity analysis that omited certain covariates (Meteorological variables)
 # create weighted synthetic controls using covariate balance weights.
 
-print(Sys.time())
-rm(list = ls())
+message(Sys.time())
 library("sf")
 library("tidyverse")
 library("parallel")
@@ -11,7 +10,7 @@ library(grid)
 library(pBrackets) 
 library(gridExtra)
 
-outDir = "../data/processed_data/"
+run_weighted_outcome_evalue <- function(outDir = "../data/processed_data/") {
 
 start_year = 2008
 variable = "nomet"
@@ -126,4 +125,21 @@ for (index in 1:nrow(parameters)) {
   
   write.csv(rate, file = file.path(outDir, "eval_result_low", variable,
                                    paste0(parameters[index,1], "_lag", parameters[index,2], ".csv")))
+}
+
+  invisible(TRUE)
+}
+
+# If executed directly, run and surface errors
+if (!interactive()) {
+  tryCatch(
+    {
+      run_weighted_outcome_evalue()
+    },
+    error = function(e) {
+      message("[ERROR] weighted_outcome_evalue failed: ", conditionMessage(e))
+      try({ tb <- utils::capture.output(traceback()); if (length(tb)>0) for (ln in tb) message(ln) }, silent = TRUE)
+      quit(save = "no", status = 1, runLast = FALSE)
+    }
+  )
 }

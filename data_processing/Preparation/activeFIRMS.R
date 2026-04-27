@@ -2,17 +2,13 @@
 #'
 #' This script processes FIRMS fire data, snapping to a standardized CA raster grid and summarizing by space and time.
 # Snap FIRMS fire data to CA raster grid, keeping all grid points which have had a fire in 2000-2021.
-rm(list = ls())
 
 library(terra)
 library(tidyverse)
 library(sf) 
 library(raster)
 
-#Dir = "wildfire_mitigation/raw_data/"
-#outDir = "wildfire_mitigation/processed_data/"
-Dir = "../data/raw_data"
-outDir = "../data/processed_data"
+run_activeFIRMS <- function(Dir = "../data/raw_data", outDir = "../data/processed_data") {
 
 # CA Bound without tigris:
 #https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.2020.html#list-tab-BG8ZITUQ783GX73G14
@@ -67,4 +63,20 @@ FIRMS_ca_grouped <- st_as_sf(FIRMS_ca_grouped,
                              crs = 4326,
                              remove = FALSE)
 
-saveRDS(FIRMS_ca_grouped, file = file.path(outDir, "FIRMS.RDS"))
+  saveRDS(FIRMS_ca_grouped, file = file.path(outDir, "FIRMS.RDS"))
+  invisible(TRUE)
+}
+
+# If executed directly, run and surface errors
+if (!interactive()) {
+  tryCatch(
+    {
+      run_activeFIRMS()
+    },
+    error = function(e) {
+      message("[ERROR] activeFIRMS failed: ", conditionMessage(e))
+      try({ tb <- utils::capture.output(traceback()); if (length(tb)>0) for (ln in tb) message(ln) }, silent = TRUE)
+      quit(save = "no", status = 1, runLast = FALSE)
+    }
+  )
+}

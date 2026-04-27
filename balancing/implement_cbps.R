@@ -6,6 +6,11 @@
 ## max_FRP and prcp are log1p-winsorized; avg_BRIGHTNESS columns are dropped when `fire_*` exist.
 library("sf")
 
+# In non-interactive runs (Rscript / CI), ensure errors propagate with non-zero exit codes
+if (!interactive()) {
+  options(error = function() { traceback(); quit(save = "no", status = 1) })
+}
+
 source("balancing/cbps_ATT.R")
 source("balancing/cbps_lambda_utils.R")
 source("balancing/balancing_config.R")
